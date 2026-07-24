@@ -143,6 +143,11 @@ class Scanner:
         self._active_news_last_check: dict[str, float] = {}
         self._last_market_scan_at = 0.0
         self._last_filtered_scan_at = 0.0
+        # Tickers currently visible in the scanner (set by rows()). The filtered
+        # scan only fetches chart API data for these symbols so the 3s refresh
+        # is fast even when hundreds of historical alerts are in the store.
+        self._visible_tickers: list[str] = []
+        self._visible_tickers_lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -241,13 +246,14 @@ class Scanner:
                 self._queue_filtered_symbol_for_news(sym, merged)
 
     def _run_filtered_results_scan(self) -> None:
-        symbols = self._quote_symbols()
-        if symbols:
-            max_symbols = int(
-                getattr(config, "FILTERED_SCAN_MAX_SYMBOLS", 120) or 120
-            )
-            scan_symbols = self._quote_batch(symbols, max_symbols)
-            chunk_size = int(getattr(config, "FILTERED_SCAN_CHUNK_SIZE", 120) or 120)
+        # _quote_symbols() now returns only currently-visible tickers + up to 20
+        # unquoted new arrivals. No batching/rotation needed — just refresh them all.
+        scan_symbols = self._quote_symbols()
+        if scan_symbols:
+            # Hard cap to prevent runaway in edge cases (e.g. hundreds of new symbols)
+            max_symbols = int(getattr(config, "FILTERED_SCAN_MAX_SYMBOLS", 50) or 50)
+            scan_symbols = scan_symbols[:max_symbols]
+            chunk_size = max(1, int(getattr(config, "FILTERED_SCAN_CHUNK_SIZE", 20) or 20))
             live = self._batched_quotes(scan_symbols, chunk_size)
             for sym in scan_symbols:
                 merged = self._merge_quote_with_fundamentals(sym, live.get(sym, {}))
@@ -279,7 +285,42 @@ class Scanner:
             self._stop.wait(max(0.5, float(getattr(config, "QUOTE_REFRESH_SECONDS", 1) or 1)))
 
     def _quote_symbols(self) -> list[str]:
-        return sorted(set(self.store.active_tickers()))
+        """Return the symbols the filtered scan should refresh with chart API data.
+
+        Priority 1: tickers currently visible on the scanner (updated by rows()).
+        Priority 2: tickers with active alerts but no stored price yet — these
+                    need at least one quote so they can be filter-evaluated.
+        Universe tickers that already have a quote are handled by the universe scan.
+        """
+        with self._visible_tickers_lock:
+            visible = list(self._visible_tickers)
+
+        visible_set = set(visible)
+        snap = self.store.quotes_snapshot()
+
+        # If no visible tickers yet (app just started / first boot), fall back to
+        # the most recent active alert tickers so the board populates quickly.
+        if not visible:
+            for ticker in self.store.active_tickers():
+                if ticker not in visible_set:
+                    visible.append(ticker)
+                    visible_set.add(ticker)
+                    if len(visible) >= 30:
+                        break
+
+        # Also include newly-arrived tickers that have no quote yet (max 20).
+        # This ensures new symbols get their initial data quickly.
+        unquoted: list[str] = []
+        for ticker in self.store.active_tickers():
+            if ticker in visible_set:
+                continue
+            q = snap.get(ticker, {})
+            if q.get("last") is None:
+                unquoted.append(ticker)
+                if len(unquoted) >= 20:
+                    break
+
+        return visible + unquoted
 
     def _merge_quote_with_fundamentals(self, ticker: str, quote_data: dict) -> dict:
         merged = dict(quote_data or {})
@@ -1115,6 +1156,13 @@ class Scanner:
         self.stats["rejected_by_filter"] = rejected
         rows = list(rows_by_ticker.values())
         rows.sort(key=lambda r: r["heat"], reverse=True)
+
+        # Update the visible ticker list so the filtered scan focuses on
+        # exactly these symbols for its next chart-API refresh cycle.
+        visible = [r["ticker"] for r in rows if not r.get("filtered_reason")]
+        with self._visible_tickers_lock:
+            self._visible_tickers = visible
+
         return rows
 
     def health(self, ttl_seconds: int | None = None) -> dict:
