@@ -228,24 +228,39 @@ class YFinanceProvider(QuoteProvider):
                     # daily avg volume (e.g. 1,000,000/day). Fundamentals
                     # provide the correct daily avg_volume via tenDayAverageVolume.
 
-                    # Compute 3-min and 10-min change percentages from 1-min close bars
+                    # Compute 3-min and 10-min change percentages from 1-min close bars.
+                    # Each position in `closes` represents one 1-minute bar; None means
+                    # no trade that minute (sparse data is normal in pre/post market).
                     change_pct_3m = None
                     change_pct_10m = None
                     if closes:
                         valid_closes = [(i, float(c)) for i, c in enumerate(closes) if c is not None]
                         if len(valid_closes) >= 2:
                             last_idx, last_close = valid_closes[-1]
-                            def _ref_at(n_bars_back):
+                            prev_closes = valid_closes[:-1]
+
+                            def _ref_at(n_bars_back: int):
+                                """Return the close at or just before `last_idx - n_bars_back`.
+
+                                Falls back to the oldest available bar when there aren't
+                                enough bars yet (session just opened or sparse pre-market).
+                                Returns None only when there is literally no previous bar.
+                                """
                                 target = last_idx - n_bars_back
-                                for idx, c in reversed(valid_closes[:-1]):
+                                for idx, c in reversed(prev_closes):
                                     if idx <= target:
                                         return c
+                                # Not enough history — use the earliest bar we have so
+                                # the user sees a real (wider-window) value instead of '—'.
+                                if prev_closes:
+                                    return prev_closes[0][1]
                                 return None
+
                             ref3 = _ref_at(3)
                             ref10 = _ref_at(10)
-                            if ref3 and ref3 != 0:
+                            if ref3 is not None and ref3 != 0:
                                 change_pct_3m = (last_close - ref3) / abs(ref3) * 100.0
-                            if ref10 and ref10 != 0:
+                            if ref10 is not None and ref10 != 0:
                                 change_pct_10m = (last_close - ref10) / abs(ref10) * 100.0
 
                     # Pick the right price based on market state

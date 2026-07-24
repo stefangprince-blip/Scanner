@@ -290,6 +290,16 @@ class Scanner:
         for key, value in self._fundamentals(ticker).items():
             if value is not None or merged.get(key) is None:
                 merged[key] = value
+        # If the new quote is missing 3m/10m change data (chart API fell back to
+        # fast_info), carry forward the previous stored values — they're only a
+        # few seconds old and far better than showing '—' every other cycle.
+        prev_stored = self.store.get_quote(ticker)
+        for k in ("change_pct_3m", "change_pct_10m"):
+            if merged.get(k) is None and prev_stored.get(k) is not None:
+                # Only carry forward if the stored quote is recent (< 3 minutes)
+                age = time.time() - float(prev_stored.get("updated") or 0)
+                if age < 180:
+                    merged[k] = prev_stored[k]
         merged = self._annotate_quote_momentum(ticker, merged)
         return merged
 
