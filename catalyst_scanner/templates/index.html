@@ -43,6 +43,12 @@ border-radius:999px; background:rgba(255,255,255,.03)}
   animation:blip 5s linear infinite}
 @keyframes blip{0%,90%{opacity:1}95%{opacity:.15}100%{opacity:1}}
 
+/* session badges */
+.session-premarket{color:#F0C040; border-color:rgba(240,192,64,.4) !important}
+.session-regular{color:var(--up); border-color:rgba(79,178,134,.4) !important}
+.session-after-hours{color:#9B8EF0; border-color:rgba(155,142,240,.4) !important}
+.session-closed{color:var(--dim)}
+
 /* ---------- controls ---------- */
 .controls{
   display:flex; gap:8px; align-items:center; flex-wrap:wrap;
@@ -241,6 +247,7 @@ body.compact .meta{margin-top:4px}
 <header>
   <div class="brand">Catalyst <span>Board</span></div>
   <div class="stat"><span class="pulse"></span><b id="s-count">0</b> live</div>
+  <div class="stat" id="s-session-badge" style="display:none"></div>
   <div class="stat">window <b id="s-window-hours">{{ '%g'|format(ttl_hours) }}</b>h</div>
   <div class="stat">filtered scan <b id="s-refresh-seconds">{{ refresh_ms // 1000 }}</b>s</div>
   <div class="stat">us scan <b id="s-us-scan-seconds">{{ us_scan_seconds }}</b>s</div>
@@ -1330,7 +1337,7 @@ function render(){
         <div class="mobile-chart-wrap"><img alt="${esc(r.ticker)} chart" src="${chartUrlForTicker(r.ticker)}"></div>
       </td>
       <td class="n hide-sm" data-column="exchange">${esc(r.exchange || '—')}</td>
-      <td class="num n">${r.last!=null ? r.last.toFixed(2) : '—'}</td>
+      <td class="num n">${r.last!=null ? r.last.toFixed(2) : '—'}${r.market_state === 'PRE' || r.market_state === 'PREPRE' ? '<span class="scan-meta">pre</span>' : r.market_state === 'POST' || r.market_state === 'POSTPOST' ? '<span class="scan-meta">ah</span>' : ''}</td>
       <td class="num n ${chgCls} ${chgTrendCls}">${chgTxt}${r.scan_change_delta == null ? '' : `<span class="scan-meta">Δ ${signed(r.scan_change_delta)}%</span>`}</td>
       <td class="num n hide-sm ${chg3mCls}">${chg3mTxt}</td>
       <td class="num n hide-sm ${chg10mCls}">${chg10mTxt}</td>
@@ -1348,6 +1355,48 @@ function render(){
   }).join('');
 
   firstLoad = false;
+}
+
+function updateSessionBadge(rows){
+  const badge = el('s-session-badge');
+  if (!badge) return;
+  // Determine session from rows' market_state field (most recent row)
+  let state = null;
+  for (const r of rows) {
+    if (r.market_state) { state = r.market_state; break; }
+  }
+  // Also derive from local time as fallback
+  if (!state) {
+    const now = new Date();
+    // Convert to ET
+    const etStr = now.toLocaleString('en-US', {timeZone: 'America/New_York'});
+    const et = new Date(etStr);
+    const h = et.getHours(), m = et.getMinutes(), day = et.getDay();
+    if (day === 0 || day === 6) {
+      state = 'CLOSED';
+    } else if (h < 4 || h >= 20) {
+      state = 'CLOSED';
+    } else if (h < 9 || (h === 9 && m < 30)) {
+      state = 'PRE';
+    } else if (h < 16) {
+      state = 'REGULAR';
+    } else {
+      state = 'POST';
+    }
+  }
+  let label, cls;
+  if (state === 'PRE' || state === 'PREPRE') {
+    label = '⏰ Pre-Market'; cls = 'session-premarket';
+  } else if (state === 'REGULAR') {
+    label = '🟢 Market Open'; cls = 'session-regular';
+  } else if (state === 'POST' || state === 'POSTPOST') {
+    label = '🌙 After Hours'; cls = 'session-after-hours';
+  } else {
+    label = '🔴 Market Closed'; cls = 'session-closed';
+  }
+  badge.className = `stat ${cls}`;
+  badge.textContent = label;
+  badge.style.display = '';
 }
 
 function renderFeeds(h){
@@ -1392,6 +1441,7 @@ async function tick(){
     }
     el('s-tick').textContent = new Date().toLocaleTimeString();
     renderFeeds(data.health || {});
+    updateSessionBadge(data.rows || []);
     render();
     applyVisibleColumns();
   } catch(e){

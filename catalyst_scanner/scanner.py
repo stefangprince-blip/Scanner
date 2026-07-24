@@ -14,26 +14,76 @@ from io import StringIO
 import requests
 
 _ET = zoneinfo.ZoneInfo("America/New_York")
-_TOTAL_SESSION_MINUTES = 390.0
+
+# Trading window: Mon–Fri 4:00 AM – 8:00 PM ET
+_PREMARKET_START_H = 4    # 4:00 AM ET
+_REGULAR_OPEN_H = 9
+_REGULAR_OPEN_M = 30
+_REGULAR_CLOSE_H = 16     # 4:00 PM ET
+_AFTERHOURS_END_H = 20    # 8:00 PM ET
+
+# Session window lengths in minutes (used by the pace-of-day RVOL formula)
+_PREMARKET_MINUTES = 330.0    # 4:00 AM → 9:30 AM
+_REGULAR_MINUTES = 390.0      # 9:30 AM → 4:00 PM
+_AFTERHOURS_MINUTES = 240.0   # 4:00 PM → 8:00 PM
+
+
+def _session_info() -> dict:
+    """Return the current trading session type and elapsed minutes within it.
+
+    Returns a dict with:
+      type: "premarket" | "regular" | "after_hours" | "closed"
+      elapsed_minutes: float (>= 1.0 when not closed)
+      window_minutes: total minutes in this session window
+    """
+    now = datetime.datetime.now(tz=_ET)
+    weekday = now.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+    if weekday >= 5:
+        return {"type": "closed", "elapsed_minutes": 0.0, "window_minutes": 0.0}
+
+    pm_start = now.replace(hour=_PREMARKET_START_H, minute=0, second=0, microsecond=0)
+    reg_open = now.replace(hour=_REGULAR_OPEN_H, minute=_REGULAR_OPEN_M, second=0, microsecond=0)
+    reg_close = now.replace(hour=_REGULAR_CLOSE_H, minute=0, second=0, microsecond=0)
+    ah_end = now.replace(hour=_AFTERHOURS_END_H, minute=0, second=0, microsecond=0)
+
+    if now < pm_start or now >= ah_end:
+        return {"type": "closed", "elapsed_minutes": 0.0, "window_minutes": 0.0}
+    if now < reg_open:
+        elapsed = max(1.0, (now - pm_start).total_seconds() / 60.0)
+        return {"type": "premarket", "elapsed_minutes": elapsed, "window_minutes": _PREMARKET_MINUTES}
+    if now < reg_close:
+        elapsed = max(1.0, (now - reg_open).total_seconds() / 60.0)
+        return {"type": "regular", "elapsed_minutes": elapsed, "window_minutes": _REGULAR_MINUTES}
+    elapsed = max(1.0, (now - reg_close).total_seconds() / 60.0)
+    return {"type": "after_hours", "elapsed_minutes": elapsed, "window_minutes": _AFTERHOURS_MINUTES}
+
+
+def _is_trading_window() -> bool:
+    """True Mon–Fri 4:00 AM – 8:00 PM ET (covers pre-market, regular, and after-hours)."""
+    return _session_info()["type"] != "closed"
 
 
 def _elapsed_session_minutes() -> float:
-    """Return how many minutes of the regular session have elapsed (clamped 1–390)."""
-    now = datetime.datetime.now(tz=_ET)
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    if now <= market_open:
-        return 1.0
-    if now >= market_close:
-        return _TOTAL_SESSION_MINUTES
-    return max(1.0, (now - market_open).total_seconds() / 60.0)
+    """Return elapsed minutes in the current session window (clamped ≥ 1.0).
+
+    During regular hours this matches the old behaviour.  During extended hours
+    it reflects elapsed time since the start of that sub-session.
+    """
+    info = _session_info()
+    return max(1.0, info["elapsed_minutes"])
 
 
-def _rvol(volume, avg_daily_volume, elapsed_minutes: float | None = None) -> float | None:
-    """Pace-of-day RVOL: projects the current per-minute volume rate to a full day
-    and compares to the historical daily average.
+def _rvol(volume, avg_daily_volume, elapsed_minutes: float | None = None,
+          session_type: str | None = None) -> float | None:
+    """Pace-of-day RVOL: projects the current per-minute rate to the session window
+    and compares it to the historical daily average.
 
-    Formula: (volume × 390) / (elapsed_minutes × avg_daily_volume)
+    Formula: (volume × window_minutes) / (elapsed_minutes × avg_daily_volume)
+
+    The window adapts per session:
+      • premarket   → 330 min  (4:00 AM – 9:30 AM)
+      • regular     → 390 min  (9:30 AM – 4:00 PM)
+      • after_hours → 240 min  (4:00 PM – 8:00 PM)
     """
     try:
         vol = float(volume)
@@ -42,8 +92,18 @@ def _rvol(volume, avg_daily_volume, elapsed_minutes: float | None = None) -> flo
             return None
     except (TypeError, ValueError):
         return None
-    elapsed = max(1.0, float(elapsed_minutes) if elapsed_minutes is not None else _elapsed_session_minutes())
-    return (vol * _TOTAL_SESSION_MINUTES) / (elapsed * avg)
+    info = _session_info()
+    st = session_type or info["type"]
+    window = {
+        "premarket": _PREMARKET_MINUTES,
+        "regular": _REGULAR_MINUTES,
+        "after_hours": _AFTERHOURS_MINUTES,
+    }.get(st, _REGULAR_MINUTES)
+    if elapsed_minutes is not None:
+        elapsed = max(1.0, float(elapsed_minutes))
+    else:
+        elapsed = max(1.0, info["elapsed_minutes"]) if info["elapsed_minutes"] else 1.0
+    return (vol * window) / (elapsed * avg)
 
 from . import config, quotes as quotes_mod, rssparse, scoring
 from .feeds import FeedManager
@@ -199,6 +259,10 @@ class Scanner:
     def _quote_loop(self) -> None:
         while not self._stop.is_set():
             try:
+                if not _is_trading_window():
+                    # Outside Mon–Fri 4 AM–8 PM ET; sleep and retry
+                    self._stop.wait(30.0)
+                    continue
                 now = time.time()
                 market_interval = max(5, int(getattr(config, "US_MARKET_SCAN_SECONDS", 20) or 20))
                 filtered_interval = max(2, int(getattr(config, "FILTERED_SCAN_SECONDS", 3) or 3))
@@ -247,8 +311,6 @@ class Scanner:
             avg_now = None
 
         rvol_now = _rvol(volume_now, avg_now)
-
-        change_prev = prev.get("change_pct")
         volume_prev = prev.get("volume")
         rvol_prev = prev.get("rvol")
         vol_delta_prev = prev.get("volume_delta")
@@ -988,8 +1050,8 @@ class Scanner:
 
             avg_vol = q.get("avg_volume")
             vol = q.get("volume")
-            elapsed_min = _elapsed_session_minutes()
-            rvol = _rvol(vol, avg_vol, elapsed_min)
+            sess = _session_info()
+            rvol = _rvol(vol, avg_vol, session_type=sess["type"])
             dollar_volume = (q.get("last") * vol) if (q.get("last") and vol) else None
             market_cap = q.get("market_cap")
             shares_out = q.get("shares_out")
@@ -1029,6 +1091,8 @@ class Scanner:
                 "scan_volume_accel": q.get("scan_volume_accel"),
                 "scan_rvol_delta": q.get("scan_rvol_delta"),
                 "filtered_reason": filtered_reason,
+                "session": sess.get("type", "regular"),
+                "market_state": q.get("market_state", "REGULAR"),
             }
             row["score"] = int(round(scoring.scalp_score(row, strategy_profile)))
             row["heat"] = round(scoring.heat(row), 1)

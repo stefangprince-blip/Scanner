@@ -198,7 +198,7 @@ class YFinanceProvider(QuoteProvider):
         try:
             resp = self._http.get(
                 f"https://query1.finance.yahoo.com/v8/finance/chart/{key}",
-                params={"interval": "1m", "range": "1d"},
+                params={"interval": "1m", "range": "1d", "includePrePost": "true"},
                 headers={"User-Agent": config.USER_AGENT},
                 timeout=6,
             )
@@ -211,16 +211,22 @@ class YFinanceProvider(QuoteProvider):
                     q0 = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
                     vols = q0.get("volume") or []
                     closes = q0.get("close") or []
+
+                    # Determine which trading period we're in from Yahoo's data
+                    trading_periods = meta.get("tradingPeriods") or {}
+                    current_tp = meta.get("currentTradingPeriod") or {}
+                    market_state = meta.get("marketState") or "REGULAR"  # PRE, REGULAR, POST, POSTPOST, CLOSED
+
                     vol = None
-                    avg_vol = None
                     if vols:
                         for item in reversed(vols):
                             if item is not None:
                                 vol = int(item)
                                 break
-                        # intraday bar avg kept for internal fallback only
                         vol_samples = [float(v) for v in vols[-120:] if v is not None]
                         avg_vol = (sum(vol_samples) / len(vol_samples)) if vol_samples else None
+                    else:
+                        avg_vol = None
 
                     # Compute 3-min and 10-min change percentages from 1-min close bars
                     change_pct_3m = None
@@ -229,7 +235,6 @@ class YFinanceProvider(QuoteProvider):
                         valid_closes = [(i, float(c)) for i, c in enumerate(closes) if c is not None]
                         if len(valid_closes) >= 2:
                             last_idx, last_close = valid_closes[-1]
-                            # find nearest valid bar at or before the target index
                             def _ref_at(n_bars_back):
                                 target = last_idx - n_bars_back
                                 for idx, c in reversed(valid_closes[:-1]):
@@ -243,25 +248,66 @@ class YFinanceProvider(QuoteProvider):
                             if ref10 and ref10 != 0:
                                 change_pct_10m = (last_close - ref10) / abs(ref10) * 100.0
 
-                    last = meta.get("regularMarketPrice")
+                    # Pick the right price based on market state
+                    reg_price = meta.get("regularMarketPrice")
                     prev = meta.get("chartPreviousClose") or meta.get("previousClose")
-                    chg = None
-                    if last is not None and prev:
-                        try:
-                            chg = (float(last) - float(prev)) / float(prev) * 100.0
-                        except Exception:
+
+                    if market_state in ("PRE", "PREPRE"):
+                        # Pre-market: use preMarketPrice if available
+                        last = meta.get("preMarketPrice") or reg_price
+                        chg_pct = meta.get("preMarketChangePercent")
+                        if chg_pct is not None:
+                            try:
+                                chg = float(chg_pct) * 100.0 if abs(float(chg_pct)) < 10 else float(chg_pct)
+                            except Exception:
+                                chg = None
+                        elif last is not None and prev:
+                            try:
+                                chg = (float(last) - float(prev)) / float(prev) * 100.0
+                            except Exception:
+                                chg = None
+                        else:
                             chg = None
-                    # regularMarketVolume is the cumulative session volume (needed for RVOL)
-                    session_vol = meta.get("regularMarketVolume")
+                        # Pre-market session volume from bars (regularMarketVolume is 0 until open)
+                        session_vol = vol
+                    elif market_state in ("POST", "POSTPOST"):
+                        # After-hours: use postMarketPrice if available
+                        last = meta.get("postMarketPrice") or reg_price
+                        chg_pct = meta.get("postMarketChangePercent")
+                        if chg_pct is not None:
+                            try:
+                                chg = float(chg_pct) * 100.0 if abs(float(chg_pct)) < 10 else float(chg_pct)
+                            except Exception:
+                                chg = None
+                        elif last is not None and prev:
+                            try:
+                                chg = (float(last) - float(prev)) / float(prev) * 100.0
+                            except Exception:
+                                chg = None
+                        else:
+                            chg = None
+                        session_vol = meta.get("regularMarketVolume") or vol
+                    else:
+                        # Regular session
+                        last = reg_price
+                        chg = None
+                        if last is not None and prev:
+                            try:
+                                chg = (float(last) - float(prev)) / float(prev) * 100.0
+                            except Exception:
+                                chg = None
+                        session_vol = meta.get("regularMarketVolume") or vol
+
                     return {
                         "last": float(last) if last is not None else None,
                         "prev_close": float(prev) if prev is not None else None,
-                        "change_pct": chg,
+                        "change_pct": round(chg, 2) if chg is not None else None,
                         "volume": int(session_vol) if session_vol is not None else vol,
                         "avg_volume": avg_vol,
                         "change_pct_3m": round(change_pct_3m, 2) if change_pct_3m is not None else None,
                         "change_pct_10m": round(change_pct_10m, 2) if change_pct_10m is not None else None,
                         "exchange": meta.get("exchangeName") or meta.get("fullExchangeName"),
+                        "market_state": market_state,
                     }
         except Exception:
             pass
@@ -280,6 +326,7 @@ class YFinanceProvider(QuoteProvider):
                 "volume": vol,
                 "avg_volume": avg_vol,
                 "prev_close": prev,
+                "market_state": "REGULAR",
             }
         except Exception:
             return {}

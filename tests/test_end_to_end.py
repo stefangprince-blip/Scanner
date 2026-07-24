@@ -513,27 +513,53 @@ def test_rvol_pace_of_day_formula():
 
     avg = 1_000_000  # 1M average daily volume
 
+    # Regular session window = 390 min (9:30 AM - 4:00 PM)
     # At 30 min: a stock that has already traded its FULL daily avg (1M shares)
     # is running at 13x pace: (1M × 390) / (30 × 1M) = 13x
-    r30 = _rvol(1_000_000, avg, elapsed_minutes=30)
+    r30 = _rvol(1_000_000, avg, elapsed_minutes=30, session_type="regular")
     assert r30 is not None
-    assert abs(r30 - 13.0) < 0.1, f"expected 13.0x at 30min, got {r30:.2f}x"
+    assert abs(r30 - 13.0) < 0.1, f"expected 13.0x at 30min regular, got {r30:.2f}x"
 
     # At 30 min: a stock with 100K shares vs 1M avg is only at 1.3x pace
     # Expected at 30 min = 1M × (30/390) = 76,923 shares; 100K/76.9K ≈ 1.3x
-    r30_low = _rvol(100_000, avg, elapsed_minutes=30)
+    r30_low = _rvol(100_000, avg, elapsed_minutes=30, session_type="regular")
     assert r30_low is not None
     assert abs(r30_low - 1.3) < 0.05, f"expected 1.3x at 30min low vol, got {r30_low:.2f}x"
 
     # At 390 min (end of day): converges to naive ratio
-    r390 = _rvol(1_000_000, avg, elapsed_minutes=390)
+    r390 = _rvol(1_000_000, avg, elapsed_minutes=390, session_type="regular")
     assert r390 is not None
     assert abs(r390 - 1.0) < 0.01, f"expected 1.0x at EOD, got {r390:.2f}x"
+
+    # Pre-market session window = 330 min (4:00 AM - 9:30 AM)
+    # At 60 min in pre-market: 500K shares → (500K × 330) / (60 × 1M) = 2.75x
+    r_pre = _rvol(500_000, avg, elapsed_minutes=60, session_type="premarket")
+    assert r_pre is not None
+    assert abs(r_pre - 2.75) < 0.05, f"expected 2.75x at 60min premarket, got {r_pre:.2f}x"
+
+    # After-hours session window = 240 min (4:00 PM - 8:00 PM)
+    # At 30 min after close: 1M shares → (1M × 240) / (30 × 1M) = 8.0x
+    r_ah = _rvol(1_000_000, avg, elapsed_minutes=30, session_type="after_hours")
+    assert r_ah is not None
+    assert abs(r_ah - 8.0) < 0.05, f"expected 8.0x at 30min after-hours, got {r_ah:.2f}x"
 
     # None is returned for invalid inputs
     assert _rvol(0, avg) is None
     assert _rvol(None, avg) is None
     assert _rvol(1000, 0) is None
+
+
+
+def test_session_info_types():
+    """_session_info must return a valid session type dict."""
+    from catalyst_scanner.scanner import _session_info, _is_trading_window
+    info = _session_info()
+    assert info["type"] in ("premarket", "regular", "after_hours", "closed")
+    assert isinstance(info["elapsed_minutes"], float)
+    assert isinstance(info["window_minutes"], float)
+    # _is_trading_window must agree with the session type
+    expected_open = info["type"] != "closed"
+    assert _is_trading_window() == expected_open
 
 
 def test_store_demo_and_flask_api(tmp_path):
