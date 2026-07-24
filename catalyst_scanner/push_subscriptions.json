@@ -1,0 +1,1 @@
+[{"endpoint": "https://example.example/push/abcd", "keys": {"p256dh": "BTestKey", "auth": "AuthKey"}}]

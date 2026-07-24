@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catalyst Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#10141C; --panel:#171D28; --panel-2:#1C2331; --rule:#232C3B;
+  --text:#CBD5E1; --bright:#E8EEF6; --dim:#6B7A90;
+  --cool:#3E8E7E; --warm:#D9A441; --hot:#E2593B;
+  --violet:#8B7BE8; --drained:#5A6472;
+  --up:#4FB286; --down:#D1615D;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--ink); color:var(--text); font-family:var(--sans);
+  font-size:14px; -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column;
+}
+
+/* ---------- header ---------- */
+header{
+  display:flex; align-items:baseline; gap:20px; flex-wrap:wrap;
+  padding:14px 20px 12px; border-bottom:1px solid var(--rule);
+  background:var(--panel);
+}
+.brand{font-family:var(--mono); font-weight:600; font-size:15px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--bright)}
+.brand span{color:var(--hot)}
+.stat{font-family:var(--mono); font-size:11px; letter-spacing:.08em;
+text-transform:uppercase; color:var(--dim); display:inline-flex; align-items:center;
+gap:6px; padding:4px 8px; border:1px solid rgba(255,255,255,.08);
+border-radius:999px; background:rgba(255,255,255,.03)}
+.stat b{color:var(--text); font-weight:500}.pulse{display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--cool);margin-right:6px;vertical-align:middle;
+  animation:blip 5s linear infinite}
+@keyframes blip{0%,90%{opacity:1}95%{opacity:.15}100%{opacity:1}}
+
+/* ---------- controls ---------- */
+.controls{
+  display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+  padding:9px 20px; border-bottom:1px solid var(--rule); background:var(--panel-2);
+  font-family:var(--mono); font-size:11px; letter-spacing:.06em;
+}
+.controls label{color:var(--dim); text-transform:uppercase; display:flex;
+  align-items:center; gap:6px}
+.controls .group{display:flex; gap:6px; align-items:center; flex-wrap:wrap}
+.controls .group .pill{display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border-radius:999px; border:1px solid var(--rule); background:rgba(255,255,255,.04); color:var(--text)}
+input[type=search],input[type=number],select{  background:var(--ink); color:var(--text); border:1px solid var(--rule);
+  padding:4px 7px; font-family:var(--mono); font-size:11px; border-radius:2px;
+}
+input[type=search]{width:130px}
+input[type=number]{width:52px}
+button{
+  background:var(--ink); color:var(--dim); border:1px solid var(--rule);
+  padding:4px 10px; font-family:var(--mono); font-size:11px; cursor:pointer;
+  letter-spacing:.08em; text-transform:uppercase; border-radius:2px;
+}
+button[aria-pressed=true]{color:var(--ink); background:var(--warm);
+  border-color:var(--warm); font-weight:600}
+button:hover{color:var(--bright); border-color:var(--dim)}
+.toggle-row{display:flex; gap:6px; flex-wrap:wrap; align-items:center}
+.toggle-row button{padding:3px 8px; font-size:10px; letter-spacing:.05em}
+:focus-visible{outline:2px solid var(--warm); outline-offset:2px}
+.filters-advanced{
+  display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end;
+  padding:8px 20px; border-bottom:1px solid var(--rule); background:var(--panel-2);
+  font-family:var(--mono); font-size:11px;
+}
+.controls .filters-advanced{
+  width:100%;
+  padding:8px 0 0;
+  border-top:1px solid var(--rule);
+  border-bottom:0;
+  background:transparent;
+}
+.filters-advanced .filter{
+  display:flex; gap:6px; align-items:center; color:var(--dim);
+}
+.filters-advanced .filter label{color:var(--dim); text-transform:uppercase}
+.filters-advanced .filter input[type=number]{width:78px}
+.filters-advanced .filter select{min-width:78px}
+
+/* ---------- board ---------- */
+main{flex:1; overflow:auto}
+table{width:100%; min-width:1456px; border-collapse:collapse}
+thead th{
+  position:sticky; top:0; z-index:2; background:var(--panel);
+  font-family:var(--mono); font-size:10px; font-weight:500; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--dim); text-align:left;
+  padding:8px 10px; border-bottom:1px solid var(--rule); white-space:nowrap;
+}
+thead th.sortable{cursor:pointer; user-select:none}
+thead th.sortable::after{content:' ↕'; color:var(--rule)}
+thead th.sortable[aria-sort="ascending"]::after{content:' ↑'; color:var(--bright)}
+thead th.sortable[aria-sort="descending"]::after{content:' ↓'; color:var(--bright)}
+th.num,td.num{text-align:right}
+tbody tr{border-bottom:1px solid rgba(35,44,59,.55); position:relative}
+tbody tr:hover{background:rgba(28,35,49,.7)}
+td{padding:9px 10px; vertical-align:top}
+
+/* signature 1: left edge encodes catalyst strength */
+td.edge{padding:0; width:4px}
+td.edge div{width:4px; height:100%; min-height:34px}
+
+.tick{font-family:var(--mono); font-weight:600; font-size:15px;
+  color:var(--bright); letter-spacing:.02em; text-decoration:none}
+.tick:hover{color:var(--warm)}
+.co{display:block; font-size:10px; color:var(--dim); margin-top:2px;
+  max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.head{color:var(--text); line-height:1.35; max-width:620px}
+.head a{color:inherit; text-decoration:none}
+.head a:hover{color:var(--bright); text-decoration:underline}
+.cat-title{color:var(--bright); font-weight:500}
+.cat-body{margin-top:4px; color:var(--dim); font-size:12px}
+.news-link-row{margin-top:6px}
+.news-link{
+  display:inline-block;
+  color:var(--ink);
+  background:var(--warm);
+  border:1px solid var(--warm);
+  border-radius:3px;
+  padding:2px 6px;
+  font-family:var(--mono);
+  font-size:10px;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+.news-link:hover{filter:brightness(1.05); text-decoration:none}
+.meta{margin-top:5px; display:flex; gap:6px; flex-wrap:wrap; align-items:center}
+.tag{font-family:var(--mono); font-size:9.5px; letter-spacing:.07em;
+  text-transform:uppercase; padding:2px 6px; border:1px solid var(--rule);
+  color:var(--dim); border-radius:2px}
+.tag.cat{color:var(--warm); border-color:rgba(217,164,65,.4)}
+.tag.dil{color:var(--violet); border-color:rgba(139,123,232,.45)}
+.tag.bad{color:var(--drained); border-color:rgba(90,100,114,.5);
+  text-decoration:line-through}
+.src{font-family:var(--mono); font-size:10px; color:var(--dim)}
+
+.n{font-family:var(--mono); font-size:13px; color:var(--text);
+  font-variant-numeric:tabular-nums}
+.n.big{font-size:15px; font-weight:600}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--dim)}
+.scan-up{background:rgba(79,178,134,.14); box-shadow:inset 0 0 0 1px rgba(79,178,134,.22)}
+.scan-down{background:rgba(209,97,93,.14); box-shadow:inset 0 0 0 1px rgba(209,97,93,.22)}
+.scan-meta{display:block; margin-top:3px; font-size:10px; color:var(--dim)}
+.score{font-family:var(--mono); font-weight:600; font-size:15px}
+
+/* signature 2: the row's remaining life on the board */
+.decay{height:2px; background:var(--rule); width:60px; margin-top:6px}
+.decay i{display:block; height:2px; background:var(--dim)}
+
+@media (prefers-reduced-motion:reduce){
+  .pulse{animation:none}
+}
+
+/* Filtered rows (no price / delisting) shown with reduced emphasis when visible */
+tr.filtered{opacity:0.45}
+
+.empty{padding:56px 20px; text-align:center; color:var(--dim);
+  font-family:var(--mono); font-size:12px; line-height:1.9}
+.empty b{color:var(--text); display:block; font-size:13px; margin-bottom:8px;
+  letter-spacing:.1em; text-transform:uppercase}
+
+.footer{border-top:1px solid var(--rule); background:var(--panel);
+  padding:7px 20px; font-family:var(--mono); font-size:10px; color:var(--dim);
+  display:flex; gap:16px; flex-wrap:wrap; letter-spacing:.05em}
+.feed-ok{color:var(--cool)} .feed-bad{color:var(--down)}
+.feed-pill{display:inline-flex; align-items:center; gap:6px; padding:3px 7px; border-radius:999px; border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04)}
+.feed-pill[data-status="ok"]{border-color:rgba(78,176,132,.35); background:rgba(78,176,132,.12)}
+.feed-pill[data-status="warn"]{border-color:rgba(217,164,65,.35); background:rgba(217,164,65,.12)}
+.feed-pill[data-status="bad"]{border-color:rgba(226,89,59,.35); background:rgba(226,89,59,.12)}
+.feed-pill .dot{width:7px; height:7px; border-radius:50%; background:currentColor}
+.feed-pill .dot.ok{color:var(--cool)} .feed-pill .dot.warn{color:var(--warm)} .feed-pill .dot.bad{color:var(--down)}
+.row-highlight{box-shadow:inset 3px 0 0 rgba(217,164,65,.85)}
+.spotlight{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; padding:10px 20px; border-bottom:1px solid var(--rule); background:linear-gradient(90deg, rgba(217,164,65,.08), rgba(62,142,126,.06));}
+.spotlight-card{border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.04); border-radius:8px; padding:8px 10px; display:flex; flex-direction:column; gap:4px}
+.spotlight-card .ticker{font-family:var(--mono); font-weight:600; color:var(--bright)}
+.spotlight-card .meta{font-size:11px; color:var(--dim)}
+.spotlight-card .score{font-family:var(--mono); color:var(--warm)}
+body.spotlight-collapsed .spotlight{display:none}
+.screener-collapse-row{
+  display:flex;
+  justify-content:flex-end;
+  padding:8px 20px;
+  border-bottom:1px solid var(--rule);
+  background:var(--panel-2);
+}
+#f-collapse-controls{
+  padding:4px 10px;
+  font-size:10px;
+  letter-spacing:.06em;
+}
+body.controls-collapsed header,
+body.controls-collapsed .controls,
+body.controls-collapsed .spotlight,
+body.controls-collapsed .filters-advanced{
+  display:none;
+}
+@media (max-width:900px){
+  .co{display:none}
+  .show-sm{display:inline-block}
+  td,thead th{padding:8px 6px}
+  .head{max-width:none}
+  .screener-collapse-row{padding:6px 10px}
+  .mobile-chart-wrap{display:block}
+}
+ 
+body.compact thead th{padding:6px 8px; font-size:9px}
+body.compact tbody td{padding:7px 8px}
+body.compact .tick{font-size:13px}
+body.compact .head{max-width:560px}
+body.compact .decay{width:42px}
+body.compact .meta{margin-top:4px}
+ 
+.show-sm{display:none}
+
+/* chart popup */
+.chart-popup{position:fixed; z-index:9999; background:var(--panel-2); border:1px solid var(--rule); padding:6px; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.6);}
+.chart-popup img{display:block; width:360px; height:170px}
+.mobile-chart-wrap{display:none; margin-top:8px}
+.mobile-chart-wrap img{
+  display:block;
+  width:100%;
+  max-width:360px;
+  height:auto;
+  border:1px solid var(--rule);
+  border-radius:4px;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">Catalyst <span>Board</span></div>
+  <div class="stat"><span class="pulse"></span><b id="s-count">0</b> live</div>
+  <div class="stat">window <b id="s-window-hours">{{ '%g'|format(ttl_hours) }}</b>h</div>
+  <div class="stat">filtered scan <b id="s-refresh-seconds">{{ refresh_ms // 1000 }}</b>s</div>
+  <div class="stat">us scan <b id="s-us-scan-seconds">{{ us_scan_seconds }}</b>s</div>
+  <div class="stat">last tick <b id="s-tick">—</b></div>
+  <div class="stat">filtered out <b id="s-filtered">0</b></div>
+</header>
+
+<div class="controls">
+  <div class="group">
+    <label>Min score <input type="number" id="f-score" value="0" min="0" max="100" step="5"></label>
+    <label>Min news <input type="number" id="f-news-score" value="0" min="0" max="100" step="5"></label>
+    <label>Max cap $M <input type="number" id="f-cap" value="0" min="0" step="50"></label>
+    <label>Exchange <select id="f-exch">
+      <option value="all">All major</option>
+      <option value="nasdaq">NASDAQ</option>
+      <option value="nyse">NYSE</option>
+      <option value="amex">AMEX</option>
+      <option value="bats">BATS</option>
+      <option value="iex">IEX</option>
+    </select></label>
+    <label>Find <input type="search" id="f-text" placeholder="ticker or word"></label>
+  </div>
+  <div class="group">
+    <label>Filtered scan s <input type="number" id="f-refresh-seconds" min="2" max="120" step="1"></label>
+    <label>US scan s <input type="number" id="f-us-scan-seconds" min="5" max="600" step="1"></label>
+    <label>Window h <input type="number" id="f-window-hours" min="0.2" max="48" step="0.1"></label>
+    <button id="f-apply-runtime" type="button">Apply speed/window</button>
+    <label>Sort <select id="f-sort">
+      <option value="heat">Heat</option>
+      <option value="score">Score</option>
+      <option value="news">News score</option>
+      <option value="change">Change %</option>
+      <option value="rvol">RVol</option>
+      <option value="volume">Volume</option>
+      <option value="dollar_volume">$ Volume</option>
+      <option value="age">Age</option>
+    </select></label>
+    <label>Profile <select id="f-profile">
+      <option value="balanced">Balanced</option>
+      <option value="news_first">News-first</option>
+      <option value="momentum_first">Momentum-first</option>
+    </select></label>
+    <button id="f-apply-profile" type="button">Apply profile</button>
+    <button id="f-save-profile" type="button">Save profile filters</button>
+    <label>Watchlist <select id="f-watchlist">
+      <option value="all">All setups</option>
+      <option value="small_cap_momentum">Small-cap momentum</option>
+      <option value="biotech_catalyst">Biotech catalyst</option>
+      <option value="large_cap_liquidation">Large-cap liquidation</option>
+    </select></label>
+    <button id="f-apply-watchlist" type="button">Apply watchlist</button>
+    <label>Chart <select id="f-chart-tf">
+      <option value="1m">1m</option>
+      <option value="3m">3m</option>
+      <option value="5m">5m</option>
+    </select></label>
+    <button id="f-dilution" aria-pressed="false">Hide dilution</button>
+    <button id="f-movers" aria-pressed="false">Movers only</button>
+    <button id="f-highlight" aria-pressed="false">Movers + news</button>
+    <button id="f-show-filtered" aria-pressed="false">Show filtered</button>
+    <button id="f-compact" aria-pressed="false">Compact</button>
+    <button id="f-spotlight" aria-pressed="false">Spotlight</button>
+    <button id="f-sound" aria-pressed="false">Alert sound</button>
+    <button id="f-pause" aria-pressed="false">Pause</button>
+  </div>
+  <div class="toggle-row" id="scoring-toggles">
+    <button type="button" data-setting="analyst_upgrades" aria-pressed="true">Analyst upgrades</button>
+    <button type="button" data-setting="price_targets" aria-pressed="true">Price targets</button>
+    <button type="button" data-setting="strategic_investments" aria-pressed="true">Strategic investments</button>
+    <button type="button" data-setting="commercial_launches" aria-pressed="true">Commercial launches</button>
+    <button type="button" data-setting="major_customer" aria-pressed="true">Major customer</button>
+    <button type="button" data-setting="new_contracts" aria-pressed="true">New contracts</button>
+  </div>
+  <div class="group" id="column-picker">
+    <span class="pill">Columns</span>
+    <button type="button" data-column="exchange">Exch</button>
+    <button type="button" data-column="volume">Volume</button>
+    <button type="button" data-column="dollar_volume">$Vol</button>
+    <button type="button" data-column="rvol">RVol</button>
+    <button type="button" data-column="float">Float</button>
+    <button type="button" data-column="cap">Cap</button>
+    <button type="button" data-column="news_score">News</button>
+  </div>
+  <div class="filters-advanced">
+    <div class="filter">
+      <label>Change %</label>
+      <select id="f-chg-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-chg-a" placeholder="A" step="0.1">
+      <input type="number" id="f-chg-b" placeholder="B" step="0.1">
+    </div>
+    <div class="filter">
+      <label>RVol</label>
+      <select id="f-rvol-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-rvol-a" placeholder="A" step="0.1">
+      <input type="number" id="f-rvol-b" placeholder="B" step="0.1">
+    </div>
+    <div class="filter">
+      <label>Volume</label>
+      <select id="f-vol-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-vol-a" placeholder="A" step="1">
+      <input type="number" id="f-vol-b" placeholder="B" step="1">
+    </div>
+    <div class="filter">
+      <label>Price</label>
+      <select id="f-price-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-price-a" placeholder="A" step="0.01">
+      <input type="number" id="f-price-b" placeholder="B" step="0.01">
+    </div>
+    <div class="filter">
+      <label>News</label>
+      <select id="f-news">
+        <option value="all">All</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+    </div>
+    <div class="filter">
+      <label>$ Volume</label>
+      <select id="f-dvol-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-dvol-a" placeholder="A" step="100000">
+      <input type="number" id="f-dvol-b" placeholder="B" step="100000">
+    </div>
+    <div class="filter">
+      <label>Float</label>
+      <select id="f-float-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-float-a" placeholder="A" step="1000000">
+      <input type="number" id="f-float-b" placeholder="B" step="1000000">
+    </div>
+    <div class="filter">
+      <label>Cap</label>
+      <select id="f-mcap-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-mcap-a" placeholder="A" step="10000000">
+      <input type="number" id="f-mcap-b" placeholder="B" step="10000000">
+    </div>
+    <div class="filter">
+      <label>Age (min)</label>
+      <select id="f-age-mode">
+        <option value="off">Off</option>
+        <option value="above">Above</option>
+        <option value="below">Below</option>
+        <option value="between">Between</option>
+      </select>
+      <input type="number" id="f-age-a" placeholder="A" step="1">
+      <input type="number" id="f-age-b" placeholder="B" step="1">
+    </div>
+  </div>
+</div>
+
+<main>
+  <div class="screener-collapse-row">
+    <button id="f-collapse-controls" type="button" aria-expanded="true">↑ Hide controls</button>
+  </div>
+  <div class="spotlight" id="spotlight"></div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:4px"></th>
+        <th class="sortable" style="width:150px" data-sort="ticker" aria-sort="none">Ticker</th>
+        <th class="sortable hide-sm" style="width:70px" data-column="exchange" data-sort="exchange" aria-sort="none">Exch</th>
+        <th class="num sortable" style="width:78px" data-sort="last" aria-sort="none">Last</th>
+        <th class="num sortable" style="width:70px" data-sort="change_pct" aria-sort="none">Chg</th>
+        <th class="num hide-sm sortable" style="width:68px" data-sort="change_pct_3m" aria-sort="none">Chg 3m</th>
+        <th class="num hide-sm sortable" style="width:68px" data-sort="change_pct_10m" aria-sort="none">Chg 10m</th>
+        <th class="num hide-sm sortable" style="width:90px" data-column="volume" data-sort="volume" aria-sort="none">Volume</th>
+        <th class="num hide-sm sortable" style="width:96px" data-column="dollar_volume" data-sort="dollar_volume" aria-sort="none">$Vol</th>
+        <th class="num hide-sm sortable" style="width:74px" data-column="rvol" data-sort="rvol" aria-sort="none">RVol</th>
+        <th class="num sortable" style="width:82px" data-column="cap" data-sort="market_cap" aria-sort="none">Cap</th>
+        <th class="num hide-sm sortable" style="width:82px" data-column="float" data-sort="float_shares" aria-sort="none">Float</th>
+        <th class="num hide-sm sortable" style="width:70px" data-column="news_score" data-sort="news_score" aria-sort="none">News</th>
+        <th class="num sortable" style="width:62px" data-sort="score" aria-sort="none">Score</th>
+        <th class="sortable" data-sort="headline" aria-sort="none">Catalyst</th>
+        <th class="num hide-sm sortable" style="width:76px" data-sort="age_seconds" aria-sort="none">Age</th>
+      </tr>
+    </thead>
+    <tbody id="board"></tbody>
+  </table>
+  <div class="empty" id="empty">
+    <b>No catalysts yet</b>
+    Feeds are polling. Rows appear when a release names a ticker
+    and clears the score floor, and drop off after {{ '%g'|format(ttl_hours) }} hours.
+  </div>
+</main>
+
+<footer id="feeds" style="display:none"></footer>
+<div id="legend" style="padding:8px 20px; font-family:var(--mono); font-size:11px; color:var(--dim); background:var(--panel); border-top:1px solid var(--rule);">
+  <b style="color:var(--text);">Filtered:</b> Rows without price data or flagged with delisting risk are hidden by default. Toggle the "Show filtered" control above to reveal them.
+</div>
+
+<script>
+const DEFAULT_REFRESH_MS = {{ refresh_ms }};
+const DEFAULT_US_SCAN_SECONDS = {{ us_scan_seconds|int }};
+const DEFAULT_TTL_SECONDS = {{ (ttl_hours * 3600)|int }};
+const seen = new Set();
+let firstLoad = true, paused = false, audioCtx = null;
+let includeFiltered = false;
+const sortDefaults = {
+  heat: 'desc',
+  ticker: 'asc',
+  last: 'desc',
+  change_pct: 'desc',
+  change_pct_3m: 'desc',
+  change_pct_10m: 'desc',
+  exchange: 'asc',
+  volume: 'desc',
+  dollar_volume: 'desc',
+  rvol: 'desc',
+  market_cap: 'desc',
+  float_shares: 'desc',
+  news_score: 'desc',
+  score: 'desc',
+  headline: 'asc',
+  age_seconds: 'asc',
+};
+let sortState = { key: 'heat', dir: sortDefaults.heat };
+
+const el = id => document.getElementById(id);
+const toggles = {};
+const visibleColumns = {
+  exchange: true,
+  volume: true,
+  dollar_volume: true,
+  rvol: true,
+  float: true,
+  cap: true,
+  news_score: true,
+};
+const scoringToggleDefaults = {
+  analyst_upgrades: true,
+  price_targets: true,
+  strategic_investments: true,
+  commercial_launches: true,
+  major_customer: true,
+  new_contracts: true,
+};
+let scoringToggles = {...scoringToggleDefaults};
+let compactView = false;
+let spotlightVisible = true;
+let controlsCollapsed = false;
+let chartTimeframe = '1m';
+let scalpProfile = 'balanced';
+let watchlistPreset = 'all';
+let profileFilters = {};
+let pollMs = DEFAULT_REFRESH_MS;
+let usScanSecondsSetting = DEFAULT_US_SCAN_SECONDS;
+let activePollTimer = null;
+let ttlSecondsSetting = DEFAULT_TTL_SECONDS;
+const FILTER_IDS = [
+  'f-score','f-news-score','f-cap','f-exch','f-text','f-news',
+  'f-chg-mode','f-chg-a','f-chg-b',
+  'f-rvol-mode','f-rvol-a','f-rvol-b',
+  'f-vol-mode','f-vol-a','f-vol-b',
+  'f-price-mode','f-price-a','f-price-b',
+  'f-dvol-mode','f-dvol-a','f-dvol-b',
+  'f-float-mode','f-float-a','f-float-b',
+  'f-mcap-mode','f-mcap-a','f-mcap-b',
+  'f-age-mode','f-age-a','f-age-b'
+];
+function chartUrlForTicker(ticker){
+  return `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`;
+}
+function isMobileViewport(){
+  return window.matchMedia('(max-width: 900px)').matches;
+}
+function applyCompactView(){
+  document.body.classList.toggle('compact', compactView);
+  const btn = el('f-compact');
+  if (btn) btn.setAttribute('aria-pressed', compactView ? 'true' : 'false');
+  try { localStorage.setItem('compactView', compactView ? '1' : '0'); } catch(e){}
+}
+function applySpotlightVisibility(){
+  document.body.classList.toggle('spotlight-collapsed', !spotlightVisible);
+  const btn = el('f-spotlight');
+  if (btn) btn.setAttribute('aria-pressed', spotlightVisible ? 'true' : 'false');
+  try { localStorage.setItem('spotlightVisible', spotlightVisible ? '1' : '0'); } catch(e){}
+}
+function applyControlsCollapsed(){
+  document.body.classList.toggle('controls-collapsed', controlsCollapsed);
+  const btn = el('f-collapse-controls');
+  if (btn) {
+    btn.setAttribute('aria-expanded', controlsCollapsed ? 'false' : 'true');
+    btn.textContent = controlsCollapsed ? '↓ Show controls' : '↑ Hide controls';
+  }
+  try { localStorage.setItem('controlsCollapsed', controlsCollapsed ? '1' : '0'); } catch(e){}
+}
+['f-dilution','f-movers','f-highlight','f-show-filtered','f-compact','f-spotlight','f-sound','f-pause'].forEach(id=>{
+  toggles[id] = false;
+  el(id).addEventListener('click', () => {
+    toggles[id] = !toggles[id];
+    el(id).setAttribute('aria-pressed', toggles[id]);
+    if (id === 'f-pause') paused = toggles[id];
+    if (id === 'f-sound' && toggles[id]) playAlertSound();
+    if (id === 'f-show-filtered') {
+      includeFiltered = toggles[id];
+      try { localStorage.setItem('showFiltered', toggles[id] ? '1' : '0'); } catch(e){}
+    }
+    if (id === 'f-compact') {
+      compactView = toggles[id];
+      applyCompactView();
+    }
+    if (id === 'f-spotlight') {
+      spotlightVisible = toggles[id];
+      applySpotlightVisibility();
+    }
+    render();
+    if (id === 'f-show-filtered' || id === 'f-compact') tick();
+  });
+});
+// Apply persisted showFiltered and compact mode to the button state on load
+try {
+  includeFiltered = (localStorage.getItem('showFiltered') === '1');
+  if (includeFiltered) {
+    toggles['f-show-filtered'] = true;
+    el('f-show-filtered').setAttribute('aria-pressed', 'true');
+  }
+  compactView = (localStorage.getItem('compactView') === '1');
+  toggles['f-compact'] = compactView;
+  applyCompactView();
+  spotlightVisible = (localStorage.getItem('spotlightVisible') !== '0');
+  toggles['f-spotlight'] = spotlightVisible;
+  applySpotlightVisibility();
+} catch(e){}
+el('f-collapse-controls').addEventListener('click', () => {
+  controlsCollapsed = !controlsCollapsed;
+  applyControlsCollapsed();
+});
+try {
+  controlsCollapsed = (localStorage.getItem('controlsCollapsed') === '1');
+  applyControlsCollapsed();
+} catch(e){}
+const chartTfEl = el('f-chart-tf');
+if (chartTfEl) {
+  try {
+    const savedTf = localStorage.getItem('chartTimeframe');
+    if (savedTf === '1m' || savedTf === '3m' || savedTf === '5m') chartTimeframe = savedTf;
+  } catch(e){}
+  chartTfEl.value = chartTimeframe;
+  chartTfEl.addEventListener('change', () => {
+    const v = chartTfEl.value;
+    chartTimeframe = (v === '1m' || v === '3m' || v === '5m') ? v : '1m';
+    try { localStorage.setItem('chartTimeframe', chartTimeframe); } catch(e){}
+  });
+}
+const profileEl = el('f-profile');
+if (profileEl) {
+  try {
+    const savedProfile = localStorage.getItem('scalpProfile');
+    if (savedProfile === 'balanced' || savedProfile === 'news_first' || savedProfile === 'momentum_first') scalpProfile = savedProfile;
+  } catch(e){}
+  profileEl.value = scalpProfile;
+}
+const watchlistEl = el('f-watchlist');
+if (watchlistEl) {
+  watchlistEl.value = watchlistPreset;
+}
+function syncRangeVisibility(){
+  [
+    ['f-chg-mode','f-chg-b'], ['f-rvol-mode','f-rvol-b'], ['f-vol-mode','f-vol-b'],
+    ['f-price-mode','f-price-b'], ['f-dvol-mode','f-dvol-b'], ['f-float-mode','f-float-b'],
+    ['f-mcap-mode','f-mcap-b'], ['f-age-mode','f-age-b'],
+  ].forEach(([modeId, bId]) => {
+    const modeEl = el(modeId); const bEl = el(bId);
+    if (modeEl && bEl) bEl.style.display = modeEl.value === 'between' ? '' : 'none';
+  });
+}
+function syncRuntimeStatsUI(){
+  const refreshNode = el('s-refresh-seconds');
+  const usScanNode = el('s-us-scan-seconds');
+  const windowNode = el('s-window-hours');
+  if (refreshNode) refreshNode.textContent = String(Math.round(pollMs / 1000));
+  if (usScanNode) usScanNode.textContent = String(Math.round(usScanSecondsSetting));
+  if (windowNode) windowNode.textContent = (ttlSecondsSetting / 3600).toFixed(1).replace(/\.0$/, '');
+}
+function scheduleTicking(){
+  if (activePollTimer) clearInterval(activePollTimer);
+  activePollTimer = setInterval(tick, Math.max(2000, pollMs));
+}
+function applyRuntimeControlsFromState(){
+  const refreshInput = el('f-refresh-seconds');
+  const usScanInput = el('f-us-scan-seconds');
+  const windowInput = el('f-window-hours');
+  if (refreshInput) refreshInput.value = String(Math.round(pollMs / 1000));
+  if (usScanInput) usScanInput.value = String(Math.round(usScanSecondsSetting));
+  if (windowInput) windowInput.value = (ttlSecondsSetting / 3600).toFixed(1).replace(/\.0$/, '');
+  syncRuntimeStatsUI();
+}
+function persistRuntimeSettings(filteredScanSeconds, usScanSeconds, ttlSeconds){
+  return fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      filtered_scan_seconds: filteredScanSeconds,
+      us_market_scan_seconds: usScanSeconds,
+      alert_ttl_seconds: ttlSeconds
+    }),
+    cache: 'no-store'
+  });
+}
+function scoringSettingsPayload(){
+  const payload = {};
+  Object.keys(scoringToggleDefaults).forEach(key => {
+    payload[key] = !!scoringToggles[key];
+  });
+  return payload;
+}
+function readFilterState(){
+  const out = {};
+  FILTER_IDS.forEach(id => {
+    const node = el(id);
+    if (node) out[id] = node.value;
+  });
+  out.sort_key = sortState.key;
+  out.sort_dir = sortState.dir;
+  out.watchlist = watchlistPreset;
+  return out;
+}
+function applyFilterState(state){
+  if (!state) return false;
+  let applied = false;
+  FILTER_IDS.forEach(id => {
+    if (Object.prototype.hasOwnProperty.call(state, id)) {
+      const node = el(id);
+      if (node) {
+        node.value = state[id];
+        applied = true;
+      }
+    }
+  });
+  if (state.sort_key) sortState.key = state.sort_key;
+  if (state.sort_dir) sortState.dir = state.sort_dir;
+  if (sortSelect) {
+    if (sortState.key === 'heat') sortSelect.value = 'heat';
+    else if (sortState.key === 'score') sortSelect.value = 'score';
+    else if (sortState.key === 'news_score') sortSelect.value = 'news';
+    else if (sortState.key === 'change_pct') sortSelect.value = 'change';
+    else if (sortState.key === 'rvol') sortSelect.value = 'rvol';
+    else if (sortState.key === 'volume') sortSelect.value = 'volume';
+    else if (sortState.key === 'dollar_volume') sortSelect.value = 'dollar_volume';
+    else if (sortState.key === 'age_seconds') sortSelect.value = 'age';
+  }
+  if (state.watchlist) watchlistPreset = state.watchlist;
+  if (watchlistEl) watchlistEl.value = watchlistPreset;
+  syncRangeVisibility();
+  updateHeaderSortUI();
+  return applied;
+}
+function saveProfileFiltersToServer(){
+  profileFilters[scalpProfile] = readFilterState();
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      scalp_profile_filters: profileFilters,
+      scalp_profile_current: scalpProfile,
+      watchlist_preset: watchlistPreset
+    }),
+    cache: 'no-store'
+  }).catch(()=>{});
+}
+function applyScalpProfileSettings(profile){
+  const saved = profileFilters[profile];
+  if (saved && applyFilterState(saved)) return;
+  if (profile === 'news_first') {
+    el('f-news-score').value = 35;
+    el('f-rvol-mode').value = 'above'; el('f-rvol-a').value = 2; el('f-rvol-b').value = '';
+    el('f-vol-mode').value = 'above'; el('f-vol-a').value = 250000; el('f-vol-b').value = '';
+    el('f-age-mode').value = 'below'; el('f-age-a').value = 90; el('f-age-b').value = '';
+    el('f-news').value = 'yes';
+    if (sortSelect) sortSelect.value = 'score';
+    sortState = { key: 'score', dir: 'desc' };
+  } else if (profile === 'momentum_first') {
+    el('f-news-score').value = 0;
+    el('f-rvol-mode').value = 'above'; el('f-rvol-a').value = 4; el('f-rvol-b').value = '';
+    el('f-vol-mode').value = 'above'; el('f-vol-a').value = 500000; el('f-vol-b').value = '';
+    el('f-chg-mode').value = 'above'; el('f-chg-a').value = 2.5; el('f-chg-b').value = '';
+    el('f-age-mode').value = 'below'; el('f-age-a').value = 60; el('f-age-b').value = '';
+    el('f-news').value = 'all';
+    if (sortSelect) sortSelect.value = 'rvol';
+    sortState = { key: 'rvol', dir: 'desc' };
+  } else {
+    el('f-news-score').value = 15;
+    el('f-rvol-mode').value = 'above'; el('f-rvol-a').value = 1.5; el('f-rvol-b').value = '';
+    el('f-vol-mode').value = 'above'; el('f-vol-a').value = 300000; el('f-vol-b').value = '';
+    el('f-age-mode').value = 'below'; el('f-age-a').value = 120; el('f-age-b').value = '';
+    el('f-news').value = 'all';
+    if (sortSelect) sortSelect.value = 'score';
+    sortState = { key: 'score', dir: 'desc' };
+  }
+  watchlistPreset = 'all';
+  if (watchlistEl) watchlistEl.value = watchlistPreset;
+  syncRangeVisibility();
+  updateHeaderSortUI();
+}
+const applyProfileBtn = el('f-apply-profile');
+if (applyProfileBtn) {
+  applyProfileBtn.addEventListener('click', () => {
+    const next = profileEl ? profileEl.value : 'balanced';
+    scalpProfile = (next === 'news_first' || next === 'momentum_first') ? next : 'balanced';
+    try { localStorage.setItem('scalpProfile', scalpProfile); } catch(e){}
+    applyScalpProfileSettings(scalpProfile);
+    tick();
+  });
+}
+const saveProfileBtn = el('f-save-profile');
+if (saveProfileBtn) {
+  saveProfileBtn.addEventListener('click', () => {
+    saveProfileFiltersToServer();
+    try { localStorage.setItem('scalpProfile', scalpProfile); } catch(e){}
+  });
+}
+function applyWatchlistPreset(preset){
+  const p = (preset || 'all');
+  if (p === 'small_cap_momentum') {
+    el('f-price-mode').value = 'between'; el('f-price-a').value = '0.4'; el('f-price-b').value = '20';
+    el('f-float-mode').value = 'below'; el('f-float-a').value = '80000000'; el('f-float-b').value = '';
+    el('f-rvol-mode').value = 'above'; el('f-rvol-a').value = '2.5'; el('f-rvol-b').value = '';
+    el('f-vol-mode').value = 'above'; el('f-vol-a').value = '600000'; el('f-vol-b').value = '';
+    el('f-dvol-mode').value = 'above'; el('f-dvol-a').value = '2500000'; el('f-dvol-b').value = '';
+    el('f-news').value = 'all';
+    sortState = { key: 'rvol', dir: 'desc' };
+    if (sortSelect) sortSelect.value = 'rvol';
+  } else if (p === 'biotech_catalyst') {
+    el('f-news').value = 'yes';
+    el('f-news-score').value = '30';
+    el('f-price-mode').value = 'between'; el('f-price-a').value = '0.4'; el('f-price-b').value = '25';
+    el('f-rvol-mode').value = 'above'; el('f-rvol-a').value = '1.8'; el('f-rvol-b').value = '';
+    el('f-age-mode').value = 'below'; el('f-age-a').value = '240'; el('f-age-b').value = '';
+    el('f-text').value = 'fda trial phase biotech pharma';
+    sortState = { key: 'news_score', dir: 'desc' };
+    if (sortSelect) sortSelect.value = 'news';
+  } else if (p === 'large_cap_liquidation') {
+    el('f-mcap-mode').value = 'above'; el('f-mcap-a').value = '10000000000'; el('f-mcap-b').value = '';
+    el('f-dvol-mode').value = 'above'; el('f-dvol-a').value = '25000000'; el('f-dvol-b').value = '';
+    el('f-vol-mode').value = 'above'; el('f-vol-a').value = '1500000'; el('f-vol-b').value = '';
+    el('f-chg-mode').value = 'above'; el('f-chg-a').value = '2'; el('f-chg-b').value = '';
+    el('f-news').value = 'all';
+    sortState = { key: 'dollar_volume', dir: 'desc' };
+    if (sortSelect) sortSelect.value = 'dollar_volume';
+  }
+  watchlistPreset = p;
+  if (watchlistEl) watchlistEl.value = watchlistPreset;
+  try { localStorage.setItem('watchlistPreset', watchlistPreset); } catch(e){}
+  syncRangeVisibility();
+  updateHeaderSortUI();
+}
+const applyWatchlistBtn = el('f-apply-watchlist');
+if (applyWatchlistBtn) {
+  applyWatchlistBtn.addEventListener('click', () => {
+    const next = watchlistEl ? watchlistEl.value : 'all';
+    applyWatchlistPreset(next);
+    saveProfileFiltersToServer();
+    tick();
+  });
+}
+const applyRuntimeBtn = el('f-apply-runtime');
+if (applyRuntimeBtn) {
+  applyRuntimeBtn.addEventListener('click', async () => {
+    const refreshInput = el('f-refresh-seconds');
+    const usScanInput = el('f-us-scan-seconds');
+    const windowInput = el('f-window-hours');
+    const refreshSecondsRaw = Number(refreshInput ? refreshInput.value : 0);
+    const usScanSecondsRaw = Number(usScanInput ? usScanInput.value : 0);
+    const windowHoursRaw = Number(windowInput ? windowInput.value : 0);
+    const refreshSeconds = Number.isFinite(refreshSecondsRaw) ? Math.max(2, Math.min(120, Math.round(refreshSecondsRaw))) : Math.round(pollMs / 1000);
+    const usScanSeconds = Number.isFinite(usScanSecondsRaw) ? Math.max(5, Math.min(600, Math.round(usScanSecondsRaw))) : usScanSecondsSetting;
+    const ttlSeconds = Number.isFinite(windowHoursRaw) ? Math.max(600, Math.min(172800, Math.round(windowHoursRaw * 3600))) : ttlSecondsSetting;
+    try {
+      const resp = await persistRuntimeSettings(refreshSeconds, usScanSeconds, ttlSeconds);
+      if (resp.ok) {
+        pollMs = refreshSeconds * 1000;
+        usScanSecondsSetting = usScanSeconds;
+        ttlSecondsSetting = ttlSeconds;
+        applyRuntimeControlsFromState();
+        scheduleTicking();
+        tick();
+      }
+    } catch(e){}
+  });
+}
+
+function setScoringToggle(name, value) {
+  scoringToggles[name] = !!value;
+  document.querySelectorAll('#scoring-toggles button[data-setting]').forEach(btn => {
+    const key = btn.getAttribute('data-setting');
+    if (key === name) btn.setAttribute('aria-pressed', scoringToggles[key] ? 'true' : 'false');
+  });
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(scoringSettingsPayload()),
+    cache: 'no-store'
+  }).catch(()=>{});
+}
+
+document.querySelectorAll('#scoring-toggles button[data-setting]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const name = btn.getAttribute('data-setting');
+    setScoringToggle(name, !scoringToggles[name]);
+    tick();
+  });
+});
+
+document.querySelectorAll('#column-picker button[data-column]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const key = btn.getAttribute('data-column');
+    visibleColumns[key] = !visibleColumns[key];
+    btn.setAttribute('aria-pressed', visibleColumns[key] ? 'true' : 'false');
+    try { localStorage.setItem('visibleColumns', JSON.stringify(visibleColumns)); } catch(e){}
+    render();
+  });
+});
+
+function applyVisibleColumns(){
+  document.querySelectorAll('#column-picker button[data-column]').forEach(btn => {
+    const key = btn.getAttribute('data-column');
+    btn.setAttribute('aria-pressed', visibleColumns[key] ? 'true' : 'false');
+  });
+  document.querySelectorAll('th[data-column], td[data-column]').forEach(el => {
+    const key = el.getAttribute('data-column');
+    el.style.display = visibleColumns[key] === false ? 'none' : '';
+  });
+}
+
+async function loadScoringSettings() {
+  try {
+    const res = await fetch('/api/settings', {cache: 'no-store'});
+    const payload = await res.json();
+    Object.keys(scoringToggleDefaults).forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(payload, key)) scoringToggles[key] = !!payload[key];
+      else scoringToggles[key] = scoringToggleDefaults[key];
+    });
+    if (payload.scalp_profile_filters && typeof payload.scalp_profile_filters === 'object') {
+      profileFilters = payload.scalp_profile_filters;
+    }
+    if (payload.scalp_profile_current === 'balanced' || payload.scalp_profile_current === 'news_first' || payload.scalp_profile_current === 'momentum_first') {
+      scalpProfile = payload.scalp_profile_current;
+      if (profileEl) profileEl.value = scalpProfile;
+    }
+    if (typeof payload.filtered_scan_seconds === 'number' && payload.filtered_scan_seconds >= 2) {
+      pollMs = Math.max(2000, Math.round(payload.filtered_scan_seconds * 1000));
+    } else if (typeof payload.ui_refresh_seconds === 'number' && payload.ui_refresh_seconds >= 2) {
+      pollMs = Math.max(2000, Math.round(payload.ui_refresh_seconds * 1000));
+    }
+    if (typeof payload.us_market_scan_seconds === 'number' && payload.us_market_scan_seconds >= 5) {
+      usScanSecondsSetting = Math.round(payload.us_market_scan_seconds);
+    }
+    if (typeof payload.alert_ttl_seconds === 'number' && payload.alert_ttl_seconds >= 600) {
+      ttlSecondsSetting = payload.alert_ttl_seconds;
+    }
+    document.querySelectorAll('#scoring-toggles button[data-setting]').forEach(btn => {
+      const key = btn.getAttribute('data-setting');
+      btn.setAttribute('aria-pressed', scoringToggles[key] ? 'true' : 'false');
+    });
+    applyRuntimeControlsFromState();
+    scheduleTicking();
+    syncRangeVisibility();
+    updateHeaderSortUI();
+    render();
+  } catch (e) {}
+}
+
+function restoreColumnPrefs(){
+  try {
+    const saved = localStorage.getItem('visibleColumns');
+    if (saved) Object.assign(visibleColumns, JSON.parse(saved));
+  } catch(e) {}
+  document.querySelectorAll('#column-picker button[data-column]').forEach(btn => {
+    const key = btn.getAttribute('data-column');
+    btn.setAttribute('aria-pressed', visibleColumns[key] ? 'true' : 'false');
+  });
+  applyVisibleColumns();
+}
+
+FILTER_IDS.forEach(id => {
+  const node = el(id);
+  if (node) node.addEventListener('input', render);
+  if (node) node.addEventListener('change', render);
+});
+
+[
+  'f-chg-mode','f-rvol-mode','f-vol-mode','f-price-mode',
+  'f-dvol-mode','f-float-mode','f-mcap-mode','f-age-mode'
+].forEach(modeId => {
+  const modeEl = el(modeId);
+  if (!modeEl) return;
+  modeEl.addEventListener('change', syncRangeVisibility);
+});
+
+const sortSelectMap = {
+  heat: 'heat',
+  score: 'score',
+  news: 'news_score',
+  change: 'change_pct',
+  rvol: 'rvol',
+  volume: 'volume',
+  dollar_volume: 'dollar_volume',
+  age: 'age_seconds',
+};
+const sortSelect = el('f-sort');
+if (sortSelect) {
+  sortSelect.addEventListener('change', () => {
+    const key = sortSelectMap[sortSelect.value] || 'heat';
+    sortState = { key, dir: sortDefaults[key] || 'desc' };
+    updateHeaderSortUI();
+    render();
+  });
+}
+syncRangeVisibility();
+
+document.querySelectorAll('th.sortable[data-sort]').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.getAttribute('data-sort');
+    if (!key) return;
+    if (sortState.key === key) {
+      sortState = { key, dir: (sortState.dir === 'asc' ? 'desc' : 'asc') };
+    } else {
+      sortState = { key, dir: sortDefaults[key] || 'desc' };
+    }
+    if (sortSelect) {
+      if (key === 'heat') sortSelect.value = 'heat';
+      else if (key === 'score') sortSelect.value = 'score';
+      else if (key === 'news_score') sortSelect.value = 'news';
+      else if (key === 'change_pct') sortSelect.value = 'change';
+      else if (key === 'rvol') sortSelect.value = 'rvol';
+      else if (key === 'volume') sortSelect.value = 'volume';
+      else if (key === 'dollar_volume') sortSelect.value = 'dollar_volume';
+      else if (key === 'age_seconds') sortSelect.value = 'age';
+    }
+    updateHeaderSortUI();
+    render();
+  });
+});
+
+function updateHeaderSortUI() {
+  document.querySelectorAll('th.sortable[data-sort]').forEach(th => {
+    const key = th.getAttribute('data-sort');
+    const state = key === sortState.key
+      ? (sortState.dir === 'asc' ? 'ascending' : 'descending')
+      : 'none';
+    th.setAttribute('aria-sort', state);
+  });
+}
+
+/* Catalyst strength drives the edge colour: cool -> amber -> hot. */
+function heatColor(score){
+  const t = Math.max(0, Math.min(1, score / 70));
+  const stops = [[62,142,126],[217,164,65],[226,89,59]];
+  const [a,b] = t < .5 ? [stops[0],stops[1]] : [stops[1],stops[2]];
+  const k = t < .5 ? t*2 : (t-.5)*2;
+  const mix = a.map((v,i)=>Math.round(v + (b[i]-v)*k));
+  return `rgb(${mix.join(',')})`;
+}
+
+const money = v => {
+  if (v == null) return '—';
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v/1e9).toFixed(2)+'B';
+  if (a >= 1e6) return (v/1e6).toFixed(1)+'M';
+  if (a >= 1e3) return (v/1e3).toFixed(1)+'K';
+  return v.toFixed(0);
+};
+const age = s => {
+  s = Math.max(0, s|0);
+  if (s < 60) return s+'s';
+  if (s < 3600) return Math.floor(s/60)+'m';
+  return (s/3600).toFixed(1)+'h';
+};
+const esc = t => (t||'').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const signed = n => n == null ? '—' : (n > 0 ? '+' : '') + n.toFixed(1);
+const signedMoney = n => {
+  if (n == null) return '—';
+  const txt = money(n);
+  return (n > 0 ? '+' : '') + txt;
+};
+const STICKY_TREND_MS = 30 * 1000;
+
+function computeStickyTrend(nextValue, prevValue, prevTrend, prevChangedAt, nowMs){
+  if (typeof nextValue === 'number' && typeof prevValue === 'number') {
+    const delta = nextValue - prevValue;
+    if (delta > 0) return { trend: 'up', delta, changedAt: nowMs };
+    if (delta < 0) return { trend: 'down', delta, changedAt: nowMs };
+    if ((prevTrend === 'up' || prevTrend === 'down') && (nowMs - (prevChangedAt || 0)) <= STICKY_TREND_MS) {
+      return { trend: prevTrend, delta: 0, changedAt: prevChangedAt || nowMs };
+    }
+    return { trend: 'flat', delta: 0, changedAt: prevChangedAt || nowMs };
+  }
+  if ((prevTrend === 'up' || prevTrend === 'down') && (nowMs - (prevChangedAt || 0)) <= STICKY_TREND_MS) {
+    return { trend: prevTrend, delta: null, changedAt: prevChangedAt || nowMs };
+  }
+  return { trend: 'flat', delta: null, changedAt: prevChangedAt || nowMs };
+}
+
+function updateScanTrendMetrics(rows){
+  const active = new Set();
+  const nowMs = Date.now();
+  rows.forEach(r => {
+    const ticker = (r.ticker || '').toUpperCase();
+    if (!ticker) return;
+    active.add(ticker);
+    const prev = scanStateByTicker.get(ticker) || {};
+    const changeMetric = computeStickyTrend(
+      typeof r.change_pct === 'number' ? r.change_pct : null,
+      typeof prev.lastChangePct === 'number' ? prev.lastChangePct : null,
+      prev.changeTrend || 'flat',
+      prev.changeChangedAt || 0,
+      nowMs
+    );
+    const volumeMetric = computeStickyTrend(
+      typeof r.volume === 'number' ? r.volume : null,
+      typeof prev.lastVolume === 'number' ? prev.lastVolume : null,
+      prev.volumeTrend || 'flat',
+      prev.volumeChangedAt || 0,
+      nowMs
+    );
+    const rvolMetric = computeStickyTrend(
+      typeof r.rvol === 'number' ? r.rvol : null,
+      typeof prev.lastRvol === 'number' ? prev.lastRvol : null,
+      prev.rvolTrend || 'flat',
+      prev.rvolChangedAt || 0,
+      nowMs
+    );
+    const dvolMetric = computeStickyTrend(
+      typeof r.dollar_volume === 'number' ? r.dollar_volume : null,
+      typeof prev.lastDollarVolume === 'number' ? prev.lastDollarVolume : null,
+      prev.dvolTrend || 'flat',
+      prev.dvolChangedAt || 0,
+      nowMs
+    );
+    const volumeDelta = typeof volumeMetric.delta === 'number' ? volumeMetric.delta : null;
+    const runningVolumeDelta = (typeof volumeDelta === 'number')
+      ? ((prev.runningVolumeDelta || 0) + volumeDelta)
+      : (prev.runningVolumeDelta || 0);
+
+    r.scan_change_delta = changeMetric.delta;
+    r.scan_change_trend = changeMetric.trend;
+    r.scan_volume_delta = volumeDelta;
+    r.scan_volume_trend = volumeMetric.trend;
+    r.scan_volume_running = runningVolumeDelta;
+    r.scan_rvol_delta = rvolMetric.delta;
+    r.scan_rvol_trend = rvolMetric.trend;
+    r.scan_dollar_volume_delta = dvolMetric.delta;
+    r.scan_dollar_volume_trend = dvolMetric.trend;
+
+    scanStateByTicker.set(ticker, {
+      lastChangePct: (typeof r.change_pct === 'number') ? r.change_pct : prev.lastChangePct,
+      lastVolume: (typeof r.volume === 'number') ? r.volume : prev.lastVolume,
+      lastRvol: (typeof r.rvol === 'number') ? r.rvol : prev.lastRvol,
+      lastDollarVolume: (typeof r.dollar_volume === 'number') ? r.dollar_volume : prev.lastDollarVolume,
+      runningVolumeDelta,
+      changeTrend: changeMetric.trend,
+      volumeTrend: volumeMetric.trend,
+      rvolTrend: rvolMetric.trend,
+      dvolTrend: dvolMetric.trend,
+      changeChangedAt: changeMetric.changedAt,
+      volumeChangedAt: volumeMetric.changedAt,
+      rvolChangedAt: rvolMetric.changedAt,
+      dvolChangedAt: dvolMetric.changedAt
+    });
+  });
+  [...scanStateByTicker.keys()].forEach(t => {
+    if (!active.has(t)) scanStateByTicker.delete(t);
+  });
+}
+
+function beep(freq, dur){
+  try {
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = freq; o.type = 'sine';
+    g.gain.setValueAtTime(.14, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001, audioCtx.currentTime + dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch(e){}
+}
+
+const alertSound = new Audio('/static/sounds/cash-register.mp3');
+alertSound.preload = 'auto';
+alertSound.addEventListener('error', () => {
+  alertSound.src = '/static/sounds/cash-register.wav';
+});
+
+function playAlertSound(){
+  if (!toggles['f-sound']) return;
+  try {
+    alertSound.currentTime = 0;
+    alertSound.play().catch(() => beep(880, .08));
+  } catch(e){
+    beep(880, .08);
+  }
+}
+
+let data = {rows: [], health: {}};
+const scanStateByTicker = new Map();
+// Persisted preference for showing filtered items
+includeFiltered = (localStorage.getItem('showFiltered') === '1'); // when true, call /api/rows?all=1 to include filtered items
+
+function rowHasNews(r){
+  const src = String(r.source || '');
+  if (!src) return false;
+  const parts = src.split(/[,+]/).map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return false;
+  const rvolSources = new Set(['Relative Volume Scanner', 'Independent RVOL Scanner']);
+  return parts.some(p => !rvolSources.has(p));
+}
+
+function rangePass(value, mode, a, b){
+  if (mode === 'off') return true;
+  if (value == null || Number.isNaN(value)) return false;
+  const n = Number(value);
+  const na = Number(a);
+  const nb = Number(b);
+  if (mode === 'above') return !Number.isNaN(na) ? n > na : true;
+  if (mode === 'below') return !Number.isNaN(na) ? n < na : true;
+  if (mode === 'between') {
+    if (Number.isNaN(na) || Number.isNaN(nb)) return true;
+    const lo = Math.min(na, nb), hi = Math.max(na, nb);
+    return n >= lo && n <= hi;
+  }
+  return true;
+}
+
+function passes(r){
+  if (!includeFiltered && r.filtered_reason) return false;
+  if (r.score < (+el('f-score').value || 0)) return false;
+  if ((r.news_score || 0) < (+el('f-news-score').value || 0)) return false;
+  const capLimit = (+el('f-cap').value || 0) * 1e6;
+  if (capLimit && r.market_cap && r.market_cap > capLimit) return false;
+  if (toggles['f-dilution'] && r.dilution.length) return false;
+  if (toggles['f-movers'] && !(r.change_pct > 3)) return false;
+  const exchFilter = el('f-exch').value;
+  const exch = String(r.exchange || '').toUpperCase();
+  if (exchFilter === 'nasdaq' && !(exch.includes('NAS') || exch === 'NMS' || exch === 'NGM')) return false;
+  if (exchFilter === 'nyse' && !(exch.includes('NYS') || exch === 'NYQ')) return false;
+  if (exchFilter === 'amex' && !(exch.includes('AMEX') || exch === 'ASE')) return false;
+  if (exchFilter === 'bats' && !exch.includes('BATS')) return false;
+  if (exchFilter === 'iex' && !exch.includes('IEX')) return false;
+  const q = el('f-text').value.trim().toLowerCase();
+  if (q && !(r.ticker.toLowerCase().includes(q) ||
+             r.headline.toLowerCase().includes(q))) return false;
+  if (!rangePass(r.change_pct, el('f-chg-mode').value, el('f-chg-a').value, el('f-chg-b').value)) return false;
+  if (!rangePass(r.rvol, el('f-rvol-mode').value, el('f-rvol-a').value, el('f-rvol-b').value)) return false;
+  if (!rangePass(r.volume, el('f-vol-mode').value, el('f-vol-a').value, el('f-vol-b').value)) return false;
+  if (!rangePass(r.last, el('f-price-mode').value, el('f-price-a').value, el('f-price-b').value)) return false;
+  if (!rangePass(r.dollar_volume, el('f-dvol-mode').value, el('f-dvol-a').value, el('f-dvol-b').value)) return false;
+  if (!rangePass(r.float_shares, el('f-float-mode').value, el('f-float-a').value, el('f-float-b').value)) return false;
+  if (!rangePass(r.market_cap, el('f-mcap-mode').value, el('f-mcap-a').value, el('f-mcap-b').value)) return false;
+  if (!rangePass((r.age_seconds || 0) / 60, el('f-age-mode').value, el('f-age-a').value, el('f-age-b').value)) return false;
+  const newsMode = el('f-news').value;
+  if (newsMode === 'yes' && !rowHasNews(r)) return false;
+  if (newsMode === 'no' && rowHasNews(r)) return false;
+  if (watchlistPreset === 'small_cap_momentum') {
+    if ((r.rvol || 0) < 2.0) return false;
+    if ((r.volume || 0) < 500000) return false;
+    if ((r.last || 0) > 25) return false;
+  } else if (watchlistPreset === 'biotech_catalyst') {
+    const text = `${r.headline || ''} ${(r.tags || []).join(' ')}`.toLowerCase();
+    if (!(text.includes('fda') || text.includes('trial') || text.includes('phase') || text.includes('biotech') || text.includes('pharma'))) return false;
+  } else if (watchlistPreset === 'large_cap_liquidation') {
+    if ((r.market_cap || 0) < 10000000000) return false;
+    if ((r.dollar_volume || 0) < 15000000) return false;
+    if (Math.abs(r.change_pct || 0) < 1.5) return false;
+  }
+  return true;
+}
+
+function sortRows(rows){
+  const key = sortState.key;
+  const dir = sortState.dir === 'asc' ? 1 : -1;
+  const copy = rows.slice();
+  copy.sort((a,b)=>{
+    const av = a[key];
+    const bv = b[key];
+    if (av == null && bv == null) return (b.heat||0) - (a.heat||0);
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    let cmp = 0;
+    if (typeof av === 'string' || typeof bv === 'string') {
+      cmp = String(av).localeCompare(String(bv));
+    } else {
+      cmp = (av - bv);
+    }
+    if (cmp === 0) return (b.heat||0) - (a.heat||0);
+    return cmp * dir;
+  });
+  return copy;
+}
+
+function render(){
+  const filteredRows = data.rows.filter(passes);
+  filteredRows.forEach(r => {
+    if (!seen.has(r.id)){
+      if (!firstLoad) playAlertSound();
+      seen.add(r.id);
+    }
+  });
+  const rows = sortRows(filteredRows);
+  el('s-count').textContent = rows.length;
+  el('empty').style.display = rows.length ? 'none' : 'block';
+  const spotlightRows = rows.slice(0, 6).map(r => {
+    const chg = r.change_pct;
+    const chgTxt = chg == null ? '—' : (chg>0?'+':'') + chg.toFixed(1) + '%';
+    return `<div class="spotlight-card"><div class="ticker">${esc(r.ticker)}</div><div class="meta">${esc(r.headline)}</div><div class="score">${r.score} • ${chgTxt}</div></div>`;
+  }).join('');
+  el('spotlight').innerHTML = spotlightRows || '<div class="spotlight-card"><div class="meta">No movers yet</div></div>';
+  el('board').innerHTML = rows.map(r => {
+    const chg = r.change_pct;
+    const chgCls = chg == null ? 'flat' : chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+    const chgTrendCls = r.scan_change_trend === 'up' ? 'scan-up' : (r.scan_change_trend === 'down' ? 'scan-down' : '');
+    const chgTxt = chg == null ? '—' : (chg>0?'+':'') + chg.toFixed(1) + '%';
+    const chg3m = r.change_pct_3m;
+    const chg3mCls = chg3m == null ? 'flat' : chg3m > 0 ? 'up' : chg3m < 0 ? 'down' : 'flat';
+    const chg3mTxt = chg3m == null ? '—' : (chg3m>0?'+':'') + chg3m.toFixed(1) + '%';
+    const chg10m = r.change_pct_10m;
+    const chg10mCls = chg10m == null ? 'flat' : chg10m > 0 ? 'up' : chg10m < 0 ? 'down' : 'flat';
+    const chg10mTxt = chg10m == null ? '—' : (chg10m>0?'+':'') + chg10m.toFixed(1) + '%';
+    const volTrendCls = r.scan_volume_trend === 'up' ? 'scan-up' : (r.scan_volume_trend === 'down' ? 'scan-down' : '');
+    const dvolTrendCls = r.scan_dollar_volume_trend === 'up' ? 'scan-up' : (r.scan_dollar_volume_trend === 'down' ? 'scan-down' : '');
+    const rvolTrendCls = r.scan_rvol_trend === 'up' ? 'scan-up' : (r.scan_rvol_trend === 'down' ? 'scan-down' : '');
+    const volMeta = r.scan_volume_delta == null
+      ? ''
+      : `<span class="scan-meta">Δ ${signedMoney(r.scan_volume_delta)} • Run ${signedMoney(r.scan_volume_running)}</span>`;
+    const tags = [
+      ...r.tags.map(t=>`<span class="tag cat">${esc(t)}</span>`),
+      ...r.dilution.map(t=>`<span class="tag dil">${esc(t)}</span>`),
+      ...r.distress.map(t=>`<span class="tag bad">${esc(t)}</span>`),
+    ].join('');
+    const hasArticleUrl = !!(r.url && r.url !== '#');
+    const articleHref = hasArticleUrl
+      ? r.url
+      : `https://finance.yahoo.com/quote/${encodeURIComponent(r.ticker)}/news`;
+    const articleTitle = hasArticleUrl
+      ? (r.headline || `${r.ticker} article`)
+      : `${r.ticker} latest news`;
+    const catalystTitle = esc(r.headline || `${r.ticker} catalyst`);
+    const catalystBody = (r.body || '').trim();
+    const catalystSummary = catalystBody
+      ? `<div class="cat-body">${esc(catalystBody.length > 220 ? catalystBody.slice(0, 220) + '…' : catalystBody)}</div>`
+      : '';
+    const newsLink = `<div class="news-link-row"><a class="news-link" href="${esc(articleHref)}" target="_blank" rel="noopener">News: ${esc(articleTitle)}</a></div>`;
+    const isFiltered = !!r.filtered_reason;
+    const highlight = toggles['f-highlight'] && (Math.abs(chg) > 3 || r.score >= 35);
+    return `<tr data-row-id="${esc(r.id)}" class="${isFiltered ? 'filtered':''} ${highlight ? 'row-highlight':''}">
+      <td class="edge"><div style="background:${heatColor(r.score)}"></div></td>
+      <td>
+        <a class="tick" href="https://finance.yahoo.com/quote/${esc(r.ticker)}"
+           target="_blank" rel="noopener">${esc(r.ticker)}</a>
+        <span class="co">${esc(r.name||r.exchange||'')}</span>
+        <div class="decay" title="time left in window">
+          <i style="width:${(r.ttl_fraction*100).toFixed(1)}%;
+           background:${heatColor(r.score)}"></i></div>
+        <div class="mobile-chart-wrap"><img alt="${esc(r.ticker)} chart" src="${chartUrlForTicker(r.ticker)}"></div>
+      </td>
+      <td class="n hide-sm" data-column="exchange">${esc(r.exchange || '—')}</td>
+      <td class="num n">${r.last!=null ? r.last.toFixed(2) : '—'}</td>
+      <td class="num n ${chgCls} ${chgTrendCls}">${chgTxt}${r.scan_change_delta == null ? '' : `<span class="scan-meta">Δ ${signed(r.scan_change_delta)}%</span>`}</td>
+      <td class="num n hide-sm ${chg3mCls}">${chg3mTxt}</td>
+      <td class="num n hide-sm ${chg10mCls}">${chg10mTxt}</td>
+      <td class="num n hide-sm ${volTrendCls}" data-column="volume">${r.volume!=null ? money(r.volume) : '—'}${volMeta}</td>
+      <td class="num n hide-sm ${dvolTrendCls}" data-column="dollar_volume">${r.dollar_volume!=null ? '$'+money(r.dollar_volume) : '—'}</td>
+      <td class="num n hide-sm ${rvolTrendCls}" data-column="rvol">${r.rvol!=null ? r.rvol.toFixed(1)+'x' : '—'}</td>
+      <td class="num n" data-column="cap">${money(r.market_cap)}</td>
+      <td class="num n hide-sm" data-column="float">${money(r.float_shares)}</td>
+      <td class="num n hide-sm" data-column="news_score">${r.news_score!=null ? r.news_score : '—'}</td>
+      <td class="num score" style="color:${heatColor(r.score)}">${r.score}</td>
+      <td class="head"><div class="cat-title">${catalystTitle}</div>${catalystSummary}${newsLink}
+        <div class="meta">${tags}${isFiltered?`<span class="tag bad">Filtered: ${esc(r.filtered_reason)}</span>`:''}${r.sources && r.sources.length>1?`<span class="tag">Sources: ${esc(r.sources.join(', '))}</span>`:''}<span class="src">${esc(r.source)}</span></div></td>
+      <td class="num n hide-sm">${age(r.age_seconds)}</td>
+    </tr>`;
+  }).join('');
+
+  firstLoad = false;
+}
+
+function renderFeeds(h){
+  el('s-filtered').textContent = h.rejected_by_filter ?? 0;
+  const feedHtml = (h.feeds||[]).map(f => {
+    const ok = !!(f.status && (f.status.startsWith('2') || f.status === '304 unchanged'));
+    const warn = !!(f.status && (f.status.includes('429') || f.status.includes('403') || f.status.includes('503')));
+    const state = warn ? 'warn' : (ok ? 'ok' : 'bad');
+    return `<span class="feed-pill ${ok?'feed-ok':'feed-bad'}" data-status="${state}"><span class="dot ${state}"></span>${esc(f.name)} · ${esc(f.status||'—')}</span>`;
+  }).join(' ');
+  el('feeds').innerHTML = `${feedHtml} <span class="feed-pill" data-status="ok"><span class="dot ok"></span>provider ${esc(h.provider||'')}</span>`;
+}
+
+async function tick(){
+  if (paused) return;
+  try {
+    const parts = [];
+    if (includeFiltered) parts.push('all=1');
+    if (scalpProfile) parts.push(`profile=${encodeURIComponent(scalpProfile)}`);
+    const url = '/api/rows' + (parts.length ? ('?' + parts.join('&')) : '');
+    const res = await fetch(url, {cache:'no-store'});
+    data = await res.json();
+    if (typeof data.refresh_seconds === 'number' && data.refresh_seconds >= 2) {
+      const nextMs = Math.round(data.refresh_seconds * 1000);
+      if (nextMs !== pollMs) {
+        pollMs = nextMs;
+        scheduleTicking();
+      }
+    }
+    if (typeof data.us_market_scan_seconds === 'number' && data.us_market_scan_seconds >= 5) {
+      usScanSecondsSetting = Math.round(data.us_market_scan_seconds);
+    }
+    if (typeof data.ttl_seconds === 'number' && data.ttl_seconds >= 600) {
+      ttlSecondsSetting = data.ttl_seconds;
+    }
+    applyRuntimeControlsFromState();
+    updateScanTrendMetrics(data.rows || []);
+    if (data.profile) {
+      scalpProfile = data.profile;
+      if (profileEl) profileEl.value = scalpProfile;
+      try { localStorage.setItem('scalpProfile', scalpProfile); } catch(e){}
+    }
+    el('s-tick').textContent = new Date().toLocaleTimeString();
+    renderFeeds(data.health || {});
+    render();
+    applyVisibleColumns();
+  } catch(e){
+    el('s-tick').textContent = 'connection lost';
+  }
+}
+restoreColumnPrefs();
+loadScoringSettings();
+updateHeaderSortUI();
+applyRuntimeControlsFromState();
+tick();
+scheduleTicking();
+/* Keep ages and decay bars honest between server ticks. */
+setInterval(() => {
+  if (paused) return;
+  data.rows.forEach(r => {
+    r.age_seconds += 1;
+    r.ttl_fraction = Math.max(0, r.ttl_fraction - 1/(data.ttl_seconds||14400));
+  });
+}, 1000);
+
+/* ----------------- chart hover popup ------------------ */
+
+let chartPopup = null;
+function showChartForTicker(ticker, anchor){
+  if (isMobileViewport()) return;
+  hideChart();
+  chartPopup = document.createElement('div');
+  chartPopup.className = 'chart-popup';
+  const img = document.createElement('img');
+  img.src = chartUrlForTicker(ticker);
+  chartPopup.appendChild(img);
+  document.body.appendChild(chartPopup);
+  // position near anchor element but keep on-screen
+  const rect = anchor.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - 372, rect.right + 8);
+  const top = Math.max(8, rect.top - 10);
+  chartPopup.style.left = left + 'px';
+  chartPopup.style.top = top + 'px';
+}
+function hideChart(){ if(chartPopup){ chartPopup.remove(); chartPopup = null; }}
+// Event delegation: show chart on hover for ticker links
+el('board').addEventListener('mouseover', (ev)=>{
+  if (isMobileViewport()) return;
+  const a = ev.target.closest ? ev.target.closest('.tick') : null;
+  if (a){
+    const ticker = a.textContent.trim();
+    showChartForTicker(ticker, a);
+  }
+});
+el('board').addEventListener('mouseout', (ev)=>{
+  if (isMobileViewport()) return;
+  const a = ev.target.closest ? ev.target.closest('.tick') : null;
+  if (a){
+    // small timeout to allow moving into the popup if desired
+    setTimeout(()=>{
+      if (!chartPopup) return;
+      // if mouse is over the popup, keep it
+      // we keep the popup non-interactive (pointer-events default) so simply hide
+      hideChart();
+    }, 200);
+  }
+});
+
+/* ----------------- realtime socket + service worker ------------------ */
+
+(async function realtime() {
+  // Register a service worker for push (optional). The service worker here is
+  // provided by the server at /sw.js.
+  if ('serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.register('/sw.js');
+      console.log('service worker registered');
+    } catch(e){ console.warn('sw register failed', e); }
+  }
+
+  // Request notification permission so we can show native notifications
+  if (window.Notification && Notification.permission === 'default'){
+    try { await Notification.requestPermission(); } catch(e){}
+  }
+
+  // Small audio helper: page-level audio so we can play a custom sound when
+  // a new alert arrives. Place a file at /static/sounds/cash-register.mp3 or
+  // cash-register.wav for better compatibility.
+  // Try to subscribe to push notifications: get public key, register and send
+  async function subscribePush(){
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    try{
+      const res = await fetch('/push/keys');
+      const j = await res.json();
+      const publicKey = j.publicKey;
+      if (!publicKey) return;
+      const reg = await navigator.serviceWorker.ready;
+      // Convert base64 url to Uint8Array
+      function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+          outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+      }
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
+      // Send subscription to server
+      await fetch('/push/subscribe', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(sub)});
+      console.log('push subscribed');
+    } catch(e){ console.warn('push subscribe failed', e); }
+  }
+  // Attempt subscription but don't block
+  subscribePush().catch(()=>{});
+
+  // Connect to socket.io if available. Use the served client if present or a CDN
+  function loadSocketIoClient(){
+    return new Promise((res,rej)=>{
+      if (window.io) return res(window.io);
+      const s = document.createElement('script');
+      s.src = 'https://cdn.socket.io/4.6.1/socket.io.min.js';
+      s.onload = ()=>res(window.io);
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  try {
+    await loadSocketIoClient();
+    const socket = io();
+    socket.on('connect', ()=>console.log('socket connected'));
+    socket.on('disconnect', ()=>console.log('socket disconnected'));
+    socket.on('new_alert', alert => {
+      // Play sound (foreground only) if user enabled sounds
+      playAlertSound();
+
+      // Show a native notification if permissions allow
+      try {
+        if (window.Notification && Notification.permission === 'granted'){
+          const title = alert.ticker + (alert.score ? ' ('+alert.score+')' : '');
+          const n = new Notification(title, { body: alert.headline || '', tag: alert.id });
+          n.onclick = () => window.focus();
+        }
+      } catch(e){ console.warn('notify failed', e); }
+
+      // Fetch rows immediately so the board updates (falls back to polling)
+      try { tick(); } catch(e){}
+    });
+  } catch(e){ console.warn('socket io not available', e); }
+})();
+</script>
+</body>
+</html>
