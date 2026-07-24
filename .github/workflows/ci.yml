@@ -55,8 +55,9 @@ jobs:
         if: ${{ secrets.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v4
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: test-results/coverage-${{ matrix.python-version }}.xml
-          fail_ci_if_error: false
+          fail_ci_if_error: true
 
   lint:
     name: Lint & Type Check
@@ -119,7 +120,7 @@ jobs:
 
       - name: Run safety check
         run: |
-          safety check -r requirements.txt || true
+          safety check -r requirements.txt
 
   format-check:
     name: Format check (black)
