@@ -193,16 +193,30 @@ tr.filtered{opacity:0.45}
 .spotlight-card .score{font-family:var(--mono); color:var(--warm)}
 body.spotlight-collapsed .spotlight{display:none}
 .screener-collapse-row{
+  position:sticky;
+  top:0;
+  z-index:200;
   display:flex;
-  justify-content:flex-end;
-  padding:8px 20px;
+  align-items:center;
+  justify-content:space-between;
+  padding:6px 14px;
   border-bottom:1px solid var(--rule);
   background:var(--panel-2);
+  box-shadow:0 1px 4px rgba(0,0,0,.35);
+}
+.screener-collapse-row .collapse-title{
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.08em;
+  color:var(--muted);
+  text-transform:uppercase;
 }
 #f-collapse-controls{
-  padding:4px 10px;
-  font-size:10px;
+  padding:5px 14px;
+  font-size:11px;
+  font-weight:600;
   letter-spacing:.06em;
+  border-radius:4px;
 }
 body.controls-collapsed header,
 body.controls-collapsed .controls,
@@ -433,6 +447,7 @@ body.compact .meta{margin-top:4px}
 
 <main>
   <div class="screener-collapse-row">
+    <span class="collapse-title">Catalyst Scanner</span>
     <button id="f-collapse-controls" type="button" aria-expanded="true">↑ Hide controls</button>
   </div>
   <div class="spotlight" id="spotlight"></div>
@@ -609,7 +624,9 @@ el('f-collapse-controls').addEventListener('click', () => {
   applyControlsCollapsed();
 });
 try {
-  controlsCollapsed = (localStorage.getItem('controlsCollapsed') === '1');
+  const savedCollapsed = localStorage.getItem('controlsCollapsed');
+  // On first visit (no saved pref) default to collapsed on mobile
+  controlsCollapsed = savedCollapsed !== null ? savedCollapsed === '1' : isMobileViewport();
   applyControlsCollapsed();
 } catch(e){}
 const chartTfEl = el('f-chart-tf');
