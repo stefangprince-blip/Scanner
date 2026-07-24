@@ -90,14 +90,13 @@ jobs:
           flake8 .
 
       - name: Run mypy (type checking)
-        continue-on-error: true
         run: |
-          # Run mypy if configuration exists; don't block CI on missing config
+          # Run mypy if configuration exists; fail the job on errors to enforce types
           if [ -f mypy.ini ] || [ -f setup.cfg ] || [ -f pyproject.toml ]; then
             mypy .
           else
-            echo "No mypy config found; running mypy with defaults (errors won't fail the job)"
-            mypy . || true
+            echo "No mypy config found; running mypy with defaults"
+            mypy .
           fi
 
   audit-deps:
