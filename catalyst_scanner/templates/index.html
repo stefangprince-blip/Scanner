@@ -30,10 +30,25 @@ header{
   display:flex; align-items:baseline; gap:20px; flex-wrap:wrap;
   padding:14px 20px 12px; border-bottom:1px solid var(--rule);
   background:var(--panel);
+  position:sticky;
+  top:0;
+  z-index:20;
+}
+.brand-row{display:flex; align-items:center; gap:10px; min-width:0}
+.brand-row #f-collapse-controls{
+  padding:5px 14px;
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.06em;
+  border-radius:4px;
+  margin-left:auto;
+  white-space:nowrap;
+  flex:0 0 auto;
 }
 .brand{font-family:var(--mono); font-weight:600; font-size:15px;
   letter-spacing:.14em; text-transform:uppercase; color:var(--bright)}
 .brand span{color:var(--hot)}
+.brand-toggle{cursor:pointer; user-select:none}
 .stat{font-family:var(--mono); font-size:11px; letter-spacing:.08em;
 text-transform:uppercase; color:var(--dim); display:inline-flex; align-items:center;
 gap:6px; padding:4px 8px; border:1px solid rgba(255,255,255,.08);
@@ -192,45 +207,24 @@ tr.filtered{opacity:0.45}
 .spotlight-card .meta{font-size:11px; color:var(--dim)}
 .spotlight-card .score{font-family:var(--mono); color:var(--warm)}
 body.spotlight-collapsed .spotlight{display:none}
-.screener-collapse-row{
-  position:sticky;
-  top:0;
-  z-index:200;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:6px 14px;
-  border-bottom:1px solid var(--rule);
-  background:var(--panel-2);
-  box-shadow:0 1px 4px rgba(0,0,0,.35);
-}
-.screener-collapse-row .collapse-title{
-  font-size:11px;
-  font-weight:600;
-  letter-spacing:.08em;
-  color:var(--muted);
-  text-transform:uppercase;
-}
-#f-collapse-controls{
-  padding:5px 14px;
-  font-size:11px;
-  font-weight:600;
-  letter-spacing:.06em;
-  border-radius:4px;
-}
-body.controls-collapsed header,
 body.controls-collapsed .controls,
-body.controls-collapsed .spotlight,
-body.controls-collapsed .filters-advanced{
-  display:none;
+body.controls-collapsed .spotlight{
+ display:none;
 }
 @media (max-width:900px){
-  .co{display:none}
-  .show-sm{display:inline-block}
-  td,thead th{padding:8px 6px}
-  .head{max-width:none}
-  .screener-collapse-row{padding:6px 10px}
-  .mobile-chart-wrap{display:block}
+ .co{display:none}
+ .show-sm{display:inline-block}
+ td,thead th{padding:8px 6px}
+ .head{max-width:none}
+ .brand-row{width:100%; flex-wrap:wrap; row-gap:6px}
+ .brand{font-size:14px; letter-spacing:.1em}
+ .brand-row #f-collapse-controls{
+  margin-left:0;
+  padding:4px 8px;
+  font-size:10px;
+  letter-spacing:.04em;
+ }
+ .mobile-chart-wrap{display:block}
 }
  
 body.compact thead th{padding:6px 8px; font-size:9px}
@@ -259,7 +253,10 @@ body.compact .meta{margin-top:4px}
 <body>
 
 <header>
-  <div class="brand">Catalyst <span>Board</span></div>
+  <div class="brand-row">
+    <div class="brand brand-toggle" id="f-toggle-controls-title" role="button" tabindex="0" aria-expanded="true" aria-controls="controls-root">Catalyst <span>Board</span></div>
+    <button id="f-collapse-controls" type="button" aria-expanded="true" aria-controls="controls-root">↑ Hide controls</button>
+  </div>
   <div class="stat"><span class="pulse"></span><b id="s-count">0</b> live</div>
   <div class="stat" id="s-session-badge" style="display:none"></div>
   <div class="stat">window <b id="s-window-hours">{{ '%g'|format(ttl_hours) }}</b>h</div>
@@ -269,7 +266,7 @@ body.compact .meta{margin-top:4px}
   <div class="stat">filtered out <b id="s-filtered">0</b></div>
 </header>
 
-<div class="controls">
+<div class="controls" id="controls-root">
   <div class="group">
     <label>Min score <input type="number" id="f-score" value="0" min="0" max="100" step="5"></label>
     <label>Min news <input type="number" id="f-news-score" value="0" min="0" max="100" step="5"></label>
@@ -442,14 +439,10 @@ body.compact .meta{margin-top:4px}
       <input type="number" id="f-age-a" placeholder="A" step="1">
       <input type="number" id="f-age-b" placeholder="B" step="1">
     </div>
-  </div>
+    </div>
 </div>
 
 <main>
-  <div class="screener-collapse-row">
-    <span class="collapse-title">Catalyst Scanner</span>
-    <button id="f-collapse-controls" type="button" aria-expanded="true">↑ Hide controls</button>
-  </div>
   <div class="spotlight" id="spotlight"></div>
   <table>
     <thead>
@@ -576,11 +569,17 @@ function applySpotlightVisibility(){
 function applyControlsCollapsed(){
   document.body.classList.toggle('controls-collapsed', controlsCollapsed);
   const btn = el('f-collapse-controls');
+  const titleToggle = el('f-toggle-controls-title');
   if (btn) {
     btn.setAttribute('aria-expanded', controlsCollapsed ? 'false' : 'true');
     btn.textContent = controlsCollapsed ? '↓ Show controls' : '↑ Hide controls';
   }
+  if (titleToggle) titleToggle.setAttribute('aria-expanded', controlsCollapsed ? 'false' : 'true');
   try { localStorage.setItem('controlsCollapsed', controlsCollapsed ? '1' : '0'); } catch(e){}
+}
+function toggleControlsCollapsed(){
+  controlsCollapsed = !controlsCollapsed;
+  applyControlsCollapsed();
 }
 ['f-dilution','f-movers','f-highlight','f-show-filtered','f-compact','f-spotlight','f-sound','f-pause'].forEach(id=>{
   toggles[id] = false;
@@ -619,10 +618,17 @@ try {
   toggles['f-spotlight'] = spotlightVisible;
   applySpotlightVisibility();
 } catch(e){}
-el('f-collapse-controls').addEventListener('click', () => {
-  controlsCollapsed = !controlsCollapsed;
-  applyControlsCollapsed();
-});
+el('f-collapse-controls').addEventListener('click', toggleControlsCollapsed);
+const controlsTitleToggle = el('f-toggle-controls-title');
+if (controlsTitleToggle) {
+  controlsTitleToggle.addEventListener('click', toggleControlsCollapsed);
+  controlsTitleToggle.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleControlsCollapsed();
+    }
+  });
+}
 try {
   const savedCollapsed = localStorage.getItem('controlsCollapsed');
   // On first visit (no saved pref) default to collapsed on mobile
