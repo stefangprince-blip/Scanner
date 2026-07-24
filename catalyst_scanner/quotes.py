@@ -223,10 +223,10 @@ class YFinanceProvider(QuoteProvider):
                             if item is not None:
                                 vol = int(item)
                                 break
-                        vol_samples = [float(v) for v in vols[-120:] if v is not None]
-                        avg_vol = (sum(vol_samples) / len(vol_samples)) if vol_samples else None
-                    else:
-                        avg_vol = None
+                    # NOTE: do NOT return per-minute bar avg as avg_volume —
+                    # it's a per-minute figure (e.g. 5,000 shares/min) not
+                    # daily avg volume (e.g. 1,000,000/day). Fundamentals
+                    # provide the correct daily avg_volume via tenDayAverageVolume.
 
                     # Compute 3-min and 10-min change percentages from 1-min close bars
                     change_pct_3m = None
@@ -255,10 +255,12 @@ class YFinanceProvider(QuoteProvider):
                     if market_state in ("PRE", "PREPRE"):
                         # Pre-market: use preMarketPrice if available
                         last = meta.get("preMarketPrice") or reg_price
-                        chg_pct = meta.get("preMarketChangePercent")
-                        if chg_pct is not None:
+                        chg_pct_raw = meta.get("preMarketChangePercent")
+                        if chg_pct_raw is not None:
                             try:
-                                chg = float(chg_pct) * 100.0 if abs(float(chg_pct)) < 10 else float(chg_pct)
+                                # Yahoo returns preMarketChangePercent as a decimal ratio
+                                # (e.g. 0.025 for 2.5%). Multiply by 100 to get percent.
+                                chg = float(chg_pct_raw) * 100.0
                             except Exception:
                                 chg = None
                         elif last is not None and prev:
@@ -273,10 +275,11 @@ class YFinanceProvider(QuoteProvider):
                     elif market_state in ("POST", "POSTPOST"):
                         # After-hours: use postMarketPrice if available
                         last = meta.get("postMarketPrice") or reg_price
-                        chg_pct = meta.get("postMarketChangePercent")
-                        if chg_pct is not None:
+                        chg_pct_raw = meta.get("postMarketChangePercent")
+                        if chg_pct_raw is not None:
                             try:
-                                chg = float(chg_pct) * 100.0 if abs(float(chg_pct)) < 10 else float(chg_pct)
+                                # Yahoo returns postMarketChangePercent as a decimal ratio too
+                                chg = float(chg_pct_raw) * 100.0
                             except Exception:
                                 chg = None
                         elif last is not None and prev:
@@ -303,7 +306,6 @@ class YFinanceProvider(QuoteProvider):
                         "prev_close": float(prev) if prev is not None else None,
                         "change_pct": round(chg, 2) if chg is not None else None,
                         "volume": int(session_vol) if session_vol is not None else vol,
-                        "avg_volume": avg_vol,
                         "change_pct_3m": round(change_pct_3m, 2) if change_pct_3m is not None else None,
                         "change_pct_10m": round(change_pct_10m, 2) if change_pct_10m is not None else None,
                         "exchange": meta.get("exchangeName") or meta.get("fullExchangeName"),

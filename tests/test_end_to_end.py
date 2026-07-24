@@ -562,6 +562,90 @@ def test_session_info_types():
     assert _is_trading_window() == expected_open
 
 
+def test_momentum_tracking_change_delta(tmp_path):
+    """_annotate_quote_momentum must compute change_delta without NameError."""
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "mom.db")),
+    )
+    try:
+        q1 = {"last": 5.0, "change_pct": 2.0, "volume": 300_000, "avg_volume": 100_000}
+        q2 = {"last": 5.5, "change_pct": 3.5, "volume": 400_000, "avg_volume": 100_000}
+
+        out1 = scn._annotate_quote_momentum("TSYM", q1)
+        # First call: no previous state, all deltas are None
+        assert out1.get("scan_change_delta") is None
+        assert out1.get("scan_volume_delta") is None
+        assert out1.get("scan_rvol_delta") is None
+
+        out2 = scn._annotate_quote_momentum("TSYM", q2)
+        # Second call: deltas must be computed correctly
+        assert out2.get("scan_change_delta") is not None
+        assert abs(out2["scan_change_delta"] - 1.5) < 0.01, (
+            f"change_delta should be ~1.5, got {out2['scan_change_delta']}"
+        )
+        assert out2.get("scan_volume_delta") == pytest.approx(100_000, abs=1)
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_us_market_catalyst_is_added(tmp_path):
+    """_maybe_add_us_market_catalyst must fire when conditions are met."""
+    import catalyst_scanner.config as cfg
+
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "mkt.db")),
+    )
+    orig_enabled = cfg.US_MARKET_SCAN_ENABLED
+    try:
+        cfg.US_MARKET_SCAN_ENABLED = True
+        cfg.US_MARKET_SCAN_MIN_PRICE = 0.4
+        cfg.US_MARKET_SCAN_MIN_VOLUME = 300_000
+        cfg.US_MARKET_SCAN_MIN_DOLLAR_VOLUME = 1_000_000
+        cfg.US_MAJOR_EXCHANGE_ONLY = True
+
+        quote = {
+            "last": 4.0,
+            "volume": 500_000,
+            "avg_volume": 200_000,
+            "exchange": "NASDAQ",
+            "market_cap": 40_000_000,
+        }
+        scn._maybe_add_us_market_catalyst("MKTX", quote)
+        rows = scn.rows(include_filtered=True, ttl_seconds=3600)
+        assert any(r["ticker"] == "MKTX" for r in rows), "market catalyst alert should appear"
+        r = next(r for r in rows if r["ticker"] == "MKTX")
+        assert r["source"] == cfg.US_MARKET_SCAN_SOURCE
+    finally:
+        cfg.US_MARKET_SCAN_ENABLED = orig_enabled
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_source_quality_boost_covers_all_wires():
+    """All recognised wire services should get non-zero boosts."""
+    from catalyst_scanner.scoring import _source_quality_boost
+
+    assert _source_quality_boost("SEC 8-K") > 0
+    assert _source_quality_boost("BusinessWire") > 0
+    assert _source_quality_boost("GlobeNewswire") > 0
+    assert _source_quality_boost("PR Newswire") > 0
+    assert _source_quality_boost("ACCESSWIRE") > 0
+    assert _source_quality_boost("Newsfile") > 0
+    assert _source_quality_boost("StockTitan") > 0
+    assert _source_quality_boost("Confirmed News + Yahoo Finance") > 0
+    # Unknown source → zero boost, but should not raise
+    assert _source_quality_boost("Unknown Random Blog") == 0.0
+    # SEC gets maximum credibility
+    assert _source_quality_boost("SEC 8-K") >= 8.0
+
+
 def test_store_demo_and_flask_api(tmp_path):
     db1 = tmp_path / "t_pytest.db"
     st = store.Store(str(db1))

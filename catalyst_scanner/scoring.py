@@ -365,8 +365,12 @@ def _source_quality_boost(source: str) -> float:
         boost += 8.0
     if "businesswire" in s or "globenewswire" in s or "pr newswire" in s:
         boost += 4.5
+    elif "accesswire" in s or "newsfile" in s or "stocktitan" in s:
+        boost += 3.0
     if "confirmed news" in s or "yahoo finance" in s:
         boost += 3.5
+    if "streetinsider" in s or "seeking alpha" in s:
+        boost += 1.5
     return min(12.0, boost)
 
 

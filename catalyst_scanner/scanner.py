@@ -221,6 +221,8 @@ class Scanner:
             for sym in market_scan:
                 merged = self._merge_quote_with_fundamentals(sym, market_live.get(sym, {}))
                 self.store.set_quote(sym, merged)
+                self._maybe_add_us_market_catalyst(sym, merged)
+                self._maybe_add_volume_catalyst(sym, merged)
 
         independent = self._independent_symbols_for_scan()
         if independent:
@@ -252,7 +254,6 @@ class Scanner:
                 self.store.set_quote(sym, merged)
                 self._maybe_add_volume_catalyst(sym, merged)
                 self._maybe_add_volume_momentum_catalyst(sym, merged)
-                self._queue_filtered_symbol_for_news(sym, merged)
             self._run_active_symbol_news_deep_dives(scan_symbols)
         self._run_filtered_symbol_news_deep_dives()
 
@@ -311,6 +312,7 @@ class Scanner:
             avg_now = None
 
         rvol_now = _rvol(volume_now, avg_now)
+        change_prev = prev.get("change_pct")
         volume_prev = prev.get("volume")
         rvol_prev = prev.get("rvol")
         vol_delta_prev = prev.get("volume_delta")
