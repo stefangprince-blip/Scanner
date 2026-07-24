@@ -31,21 +31,74 @@ PAREN_RE = re.compile(
 )
 
 # Same, but without parentheses: "NASDAQ: ABCD" mid-sentence.
-BARE_RE = re.compile(
-    rf"\b(?:{EXCHANGES})\s*[:\-\u2013]\s*([A-Z]{{2,5}})\b"
-)
+BARE_RE = re.compile(rf"\b(?:{EXCHANGES})\s*[:\-\u2013]\s*([A-Z]{{2,5}})\b")
 
 CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
 
 # Words that look like tickers but aren't. Trimmed to things that genuinely
 # show up inside exchange-style patterns or cashtags in wire copy.
 BLOCKLIST = {
-    "CEO", "CFO", "COO", "CTO", "USA", "USD", "CAD", "ETF", "IPO", "FDA",
-    "SEC", "EPS", "GAAP", "IFRS", "NYSE", "OTC", "LLC", "INC", "LTD", "PLC",
-    "CORP", "AI", "IT", "US", "EU", "UK", "AND", "THE", "FOR", "NEW", "NOT",
-    "ALL", "ANY", "ITS", "OUR", "PDF", "FAQ", "TSX", "CSE", "NEO", "AMEX",
-    "DOD", "NIH", "WHO", "EMA", "CE", "EUA", "IND", "NDA", "BLA", "PMA",
-    "ATM", "SPAC", "PIPE", "LOI", "MOU", "MW", "GW", "KW", "OEM", "SAAS",
+    "CEO",
+    "CFO",
+    "COO",
+    "CTO",
+    "USA",
+    "USD",
+    "CAD",
+    "ETF",
+    "IPO",
+    "FDA",
+    "SEC",
+    "EPS",
+    "GAAP",
+    "IFRS",
+    "NYSE",
+    "OTC",
+    "LLC",
+    "INC",
+    "LTD",
+    "PLC",
+    "CORP",
+    "AI",
+    "IT",
+    "US",
+    "EU",
+    "UK",
+    "AND",
+    "THE",
+    "FOR",
+    "NEW",
+    "NOT",
+    "ALL",
+    "ANY",
+    "ITS",
+    "OUR",
+    "PDF",
+    "FAQ",
+    "TSX",
+    "CSE",
+    "NEO",
+    "AMEX",
+    "DOD",
+    "NIH",
+    "WHO",
+    "EMA",
+    "CE",
+    "EUA",
+    "IND",
+    "NDA",
+    "BLA",
+    "PMA",
+    "ATM",
+    "SPAC",
+    "PIPE",
+    "LOI",
+    "MOU",
+    "MW",
+    "GW",
+    "KW",
+    "OEM",
+    "SAAS",
 }
 
 
@@ -70,7 +123,8 @@ def extract(text: str) -> list[str]:
     # "(NASDAQ: AAA, BBB)" — grab the trailing symbols in a shared paren group.
     for m in re.finditer(
         rf"\(\s*(?:{EXCHANGES})\s*[:\-]\s*([A-Z]{{1,5}}(?:\s*,\s*[A-Z]{{1,5}})+)\s*\)",
-        text, re.IGNORECASE,
+        text,
+        re.IGNORECASE,
     ):
         for part in m.group(1).split(","):
             add(part)
@@ -83,3 +137,92 @@ def extract(text: str) -> list[str]:
             add(m.group(1))
 
     return found[:3]   # a release naming 4+ tickers is an index piece, not news
+
+
+# ---------------------------------------------------------------------------
+# SEC CIK -> ticker map, for EDGAR entries that carry no exchange string.
+# ---------------------------------------------------------------------------
+_CIK_MAP: dict[str, str] = {}
+_CIK_LOCK = threading.Lock()
+_CIK_LOADED_AT = 0.0
+_CIK_URL = "https://www.sec.gov/files/company_tickers.json"
+
+
+def _cache_path() -> str:
+    os.makedirs(config.CACHE_DIR, exist_ok=True)
+    return os.path.join(config.CACHE_DIR, "company_tickers.json")
+
+
+def load_cik_map(force: bool = False) -> dict[str, str]:
+    """Load (and daily-refresh) the SEC's CIK->ticker table."""
+    global _CIK_LOADED_AT
+    with _CIK_LOCK:
+        if _CIK_MAP and not force and time.time() - _CIK_LOADED_AT < 86400:
+            return _CIK_MAP
+
+        raw = None
+        path = _cache_path()
+        if (
+            not force
+            and os.path.exists(path)
+            and time.time() - os.path.getmtime(path) < 86400
+        ):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    raw = json.load(fh)
+            except (OSError, ValueError):
+                raw = None
+
+        if raw is None:
+            try:
+                resp = requests.get(
+                    _CIK_URL,
+                    timeout=20,
+                    headers={"User-Agent": config.USER_AGENT},
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(raw, fh)
+            except Exception:
+                # Fall back to a stale cache rather than losing the map entirely.
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as fh:
+                            raw = json.load(fh)
+                    except (OSError, ValueError):
+                        raw = {}
+                else:
+                    raw = {}
+
+        mapping: dict[str, str] = {}
+        for row in (raw or {}).values():
+            try:
+                mapping[str(int(row["cik_str"]))] = str(row["ticker"]).upper()
+            except (KeyError, TypeError, ValueError):
+                continue
+        _CIK_MAP.clear()
+        _CIK_MAP.update(mapping)
+        _CIK_LOADED_AT = time.time()
+        return _CIK_MAP
+
+
+CIK_IN_URL = re.compile(r"/data/(\d+)/", re.IGNORECASE)
+CIK_IN_TEXT = re.compile(r"\(CIK\s+(\d+)\)", re.IGNORECASE)
+
+
+def from_edgar(title: str, link: str, summary: str) -> list[str]:
+    """Resolve an EDGAR filing entry to a ticker via its CIK."""
+    blob = f"{title} {summary}"
+    cik = None
+    m = CIK_IN_URL.search(link or "")
+    if m:
+        cik = m.group(1)
+    else:
+        m = CIK_IN_TEXT.search(blob)
+        if m:
+            cik = m.group(1)
+    if not cik:
+        return extract(blob)
+    sym = load_cik_map().get(str(int(cik)))
+    return [sym] if sym else []

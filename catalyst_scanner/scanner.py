@@ -31,14 +31,19 @@ class Scanner:
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
-        for target, name in ((self._feed_loop, "feeds"),
-                             (self._quote_loop, "quotes"),
-                             (self._prune_loop, "prune")):
+        for target, name in (
+            (self._feed_loop, "feeds"),
+            (self._quote_loop, "quotes"),
+            (self._prune_loop, "prune"),
+        ):
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
             self._threads.append(t)
-        log.info("scanner started: %d feeds, provider=%s",
-                 len(self.feeds.feeds), type(self.provider).__name__)
+        log.info(
+            "scanner started: %d feeds, provider=%s",
+            len(self.feeds.feeds),
+            type(self.provider).__name__,
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -50,9 +55,12 @@ class Scanner:
                 for alert in self.feeds.poll_due():
                     if self.store.add(alert):
                         self.stats["alerts_total"] += 1
-                        log.info("ALERT %-6s %3d  %s",
-                                 alert["ticker"], alert["score"],
-                                 alert["headline"][:80])
+                        log.info(
+                            "ALERT %-6s %3d  %s",
+                            alert["ticker"],
+                            alert["score"],
+                            alert["headline"][:80],
+                        )
                 self.stats["last_feed_poll"] = time.time()
             except Exception:
                 log.exception("feed loop error")
@@ -168,33 +176,57 @@ class Scanner:
     def seed_demo(self) -> None:
         """Load sample headlines so the board is populated without waiting."""
         samples = [
-            ("Cellect Biotech Announces FDA Approval of ARX-4 for Relapsed AML",
-             "Cellect Biotechnology (NASDAQ: CLBT) today announced FDA approval.",
-             "GlobeNewswire"),
-            ("Nuvectra Signs $210 Million Contract Award with U.S. Department of Defense",
-             "Nuvectra Corp (NYSE American: NVTR) received the award.",
-             "BusinessWire"),
-            ("Applied UV Sciences to be Acquired by Halma plc in All-Cash Transaction",
-             "Applied UV (NASDAQ: AUVI) entered a definitive merger agreement.",
-             "PR Newswire"),
-            ("Greenland Acquisition Reports Record Revenue, Raises Full-Year Guidance",
-             "Greenland (NASDAQ: GLAC) reported record quarterly revenue.",
-             "ACCESSWIRE"),
-            ("Siebert Financial Announces Pricing of $12.0 Million Public Offering",
-             "Siebert (NASDAQ: SIEB) priced an underwritten public offering.",
-             "GlobeNewswire"),
-            ("Protara Therapeutics Announces Positive Topline Phase 2 Results",
-             "Protara (NASDAQ: TARA) met the primary endpoint.",
-             "GlobeNewswire"),
+            (
+                "Cellect Biotech Announces FDA Approval of ARX-4 for Relapsed AML",
+                "Cellect Biotechnology (NASDAQ: CLBT) today announced FDA approval.",
+                "GlobeNewswire",
+            ),
+            (
+                "Nuvectra Signs "
+                "$210 Million Contract Award with U.S. Department of Defense",
+                "Nuvectra Corp (NYSE American: NVTR) received the award.",
+                "BusinessWire",
+            ),
+            (
+                "Applied UV Sciences to be Acquired by Halma plc "
+                "in All-Cash Transaction",
+                "Applied UV (NASDAQ: AUVI) entered a definitive merger agreement.",
+                "PR Newswire",
+            ),
+            (
+                "Greenland Acquisition Reports Record Revenue, "
+                "Raises Full-Year Guidance",
+                "Greenland (NASDAQ: GLAC) reported record quarterly revenue.",
+                "ACCESSWIRE",
+            ),
+            (
+                "Siebert Financial Announces Pricing of $12.0 Million Public Offering",
+                "Siebert (NASDAQ: SIEB) priced an underwritten public offering.",
+                "GlobeNewswire",
+            ),
+            (
+                "Protara Therapeutics Announces Positive Topline Phase 2 Results",
+                "Protara (NASDAQ: TARA) met the primary endpoint.",
+                "GlobeNewswire",
+            ),
         ]
         for title, body, source in samples:
             from . import tickers as tk
+
             syms = tk.extract(f"{title} {body}")
             result = scoring.score(title, body, 1.05)
             for sym in syms:
-                self.store.add({
-                    "ticker": sym, "headline": title, "url": "#",
-                    "source": source, "published": time.time(), "body": body,
-                    **{k: result[k] for k in
-                       ("score", "tags", "dilution", "distress")},
-                })
+                self.store.add(
+                    {
+                        "ticker": sym,
+                        "headline": title,
+                        "url": "#",
+                        "source": source,
+                        "published": time.time(),
+                        "body": body,
+                        **{
+                            k: result[k]
+                            for k in ("score", "tags", "dilution", "distress")
+                        },
+                    }
+                )

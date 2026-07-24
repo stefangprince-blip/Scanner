@@ -100,22 +100,24 @@ class Store:
         out = []
         now = time.time()
         for r in rows:
-            out.append({
-                "id": r["id"],
-                "ticker": r["ticker"],
-                "headline": r["headline"],
-                "url": r["url"],
-                "source": r["source"],
-                "published": r["published"],
-                "first_seen": r["first_seen"],
-                "age_seconds": now - r["first_seen"],
-                "ttl_fraction": max(0.0, 1.0 - (now - r["first_seen"]) / ttl),
-                "score": r["score"],
-                "tags": json.loads(r["tags"] or "[]"),
-                "dilution": json.loads(r["dilution"] or "[]"),
-                "distress": json.loads(r["distress"] or "[]"),
-                "body": r["body"] or "",
-            })
+            out.append(
+                {
+                    "id": r["id"],
+                    "ticker": r["ticker"],
+                    "headline": r["headline"],
+                    "url": r["url"],
+                    "source": r["source"],
+                    "published": r["published"],
+                    "first_seen": r["first_seen"],
+                    "age_seconds": now - r["first_seen"],
+                    "ttl_fraction": max(0.0, 1.0 - (now - r["first_seen"]) / ttl),
+                    "score": r["score"],
+                    "tags": json.loads(r["tags"] or "[]"),
+                    "dilution": json.loads(r["dilution"] or "[]"),
+                    "distress": json.loads(r["distress"] or "[]"),
+                    "body": r["body"] or "",
+                }
+            )
         return out
 
     def active_tickers(self, ttl: int | None = None) -> list[str]:
@@ -162,9 +164,11 @@ class Store:
     def close(self) -> None:
         """Close the underlying sqlite connection."""
         try:
-            if hasattr(self, '_conn') and self._conn:
-                self._conn.close()
-                self._conn = None
+            if getattr(self, "_conn", None):
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
         except Exception:
             # best-effort close; don't raise during cleanup
             pass

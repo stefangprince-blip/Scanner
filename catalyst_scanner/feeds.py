@@ -38,9 +38,11 @@ class Feed:
         self.next_poll = now + wait + self.backoff
 
     def fetch(self, session: requests.Session) -> list[dict]:
-        headers = {"User-Agent": config.USER_AGENT,
-                   "Accept": "application/atom+xml, application/rss+xml, "
-                             "application/xml;q=0.9, */*;q=0.8"}
+        headers = {
+            "User-Agent": config.USER_AGENT,
+            "Accept": "application/atom+xml, application/rss+xml, "
+            "application/xml;q=0.9, */*;q=0.8",
+        }
         if self.etag:
             headers["If-None-Match"] = self.etag
         if self.modified:
@@ -122,16 +124,20 @@ class Feed:
                 continue
 
             for sym in syms:
-                alerts.append({
-                    "ticker": sym,
-                    "headline": title,
-                    "url": e.get("link", ""),
-                    "source": self.name,
-                    "published": e["published"],
-                    "body": summary,
-                    **{k: result[k] for k in
-                       ("score", "tags", "dilution", "distress")},
-                })
+                alerts.append(
+                    {
+                        "ticker": sym,
+                        "headline": title,
+                        "url": e.get("link", ""),
+                        "source": self.name,
+                        "published": e["published"],
+                        "body": summary,
+                        **{
+                            k: result[k]
+                            for k in ("score", "tags", "dilution", "distress")
+                        },
+                    }
+                )
         return alerts
 
 
@@ -161,14 +167,17 @@ class FeedManager:
 
     def status(self) -> list[dict]:
         now = time.time()
-        return [{
-            "name": f.name,
-            "status": f.last_status,
-            "seconds_since_ok": round(now - f.last_ok, 1) if f.last_ok else None,
-            "backoff": round(f.backoff, 1),
-            "errors": f.error_count,
-            "entries": f.entries_seen,
-        } for f in self.feeds]
+        return [
+            {
+                "name": f.name,
+                "status": f.last_status,
+                "seconds_since_ok": round(now - f.last_ok, 1) if f.last_ok else None,
+                "backoff": round(f.backoff, 1),
+                "errors": f.error_count,
+                "entries": f.entries_seen,
+            }
+            for f in self.feeds
+        ]
 
     def check(self) -> None:
         """One-shot connectivity report. Run this after editing FEEDS."""
@@ -186,3 +195,4 @@ class FeedManager:
             uniq = sorted(set(syms))
             preview = ", ".join(uniq[:8]) or "—"
             print(f"{feed.name:<18} {feed.last_status:<26} {preview}")
+

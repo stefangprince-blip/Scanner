@@ -39,24 +39,44 @@ TIER_B = [
     (r"\bpriority\s+review\b", 30, "FDA designation"),
     (r"\bce\s+mark\b", 24, "CE mark"),
     (r"\bawarded\b.*\bcontract\b|\bcontract\s+award(?:ed)?\b", 32, "Contract"),
-    (r"\bdepartment\s+of\s+defense\b|\bu\.?s\.?\s+army\b|\bu\.?s\.?\s+navy\b"
-     r"|\bair\s+force\b|\bdarpa\b|\bnasa\b", 30, "Gov contract"),
+    (
+        r"\bdepartment\s+of\s+defense\b|\bu\.?s\.?\s+army\b|\bu\.?s\.?\s+navy\b"
+        r"|\bair\s+force\b|\bdarpa\b|\bnasa\b",
+        30,
+        "Gov contract",
+    ),
     (r"\bpurchase\s+order\b|\breceives?\s+order\b|\bfirst\s+order\b", 26, "Order"),
     (r"\bstrategic\s+partnership\b|\bpartnership\s+with\b", 24, "Partnership"),
     (r"\blicense\s+agreement\b|\blicensing\s+deal\b", 24, "Licensing"),
     (r"\brecord\s+(?:revenue|quarter|sales|bookings)\b", 28, "Record results"),
-    (r"\braises?\s+(?:full[- ]year\s+)?guidance\b|\bincreases?\s+guidance\b",
-     30, "Guidance raise"),
-    (r"\bbeats?\s+(?:analyst\s+)?(?:estimates|expectations|consensus)\b",
-     26, "Earnings beat"),
-    (r"\buplist(?:ing|s|ed)?\s+to\s+(?:the\s+)?nasdaq\b|\bapproved\s+for\s+listing\b",
-     30, "Uplisting"),
+    (
+        r"\braises?\s+(?:full[- ]year\s+)?guidance\b|\bincreases?\s+guidance\b",
+        30,
+        "Guidance raise",
+    ),
+    (
+        r"\bbeats?\s+(?:analyst\s+)?(?:estimates|expectations|consensus)\b",
+        26,
+        "Earnings beat",
+    ),
+    (
+        r"\buplist(?:ing|s|ed)?\s+to\s+(?:the\s+)?nasdaq\b|"
+        r"\bapproved\s+for\s+listing\b",
+        30,
+        "Uplisting",
+    ),
     (r"\bshare\s+(?:re)?purchase\s+program\b|\bbuyback\b", 24, "Buyback"),
     (r"\bshort\s+squeeze\b|\bshort\s+interest\b", 20, "Short interest"),
-    (r"\bpatent\s+(?:granted|issued|allowance)\b|\bnotice\s+of\s+allowance\b",
-     22, "Patent"),
-    (r"\bjury\s+(?:verdict|awards)\b|\bwins?\s+(?:lawsuit|litigation|appeal)\b",
-     26, "Legal win"),
+    (
+        r"\bpatent\s+(?:granted|issued|allowance)\b|\bnotice\s+of\s+allowance\b",
+        22,
+        "Patent",
+    ),
+    (
+        r"\bjury\s+(?:verdict|awards)\b|\bwins?\s+(?:lawsuit|litigation|appeal)\b",
+        26,
+        "Legal win",
+    ),
 ]
 
 TIER_C = [
@@ -66,18 +86,18 @@ TIER_C = [
     (r"\bexpands?\s+into\b|\benters?\s+(?:the\s+)?\w+\s+market\b", 12, "Expansion"),
     (r"\blaunch(?:es|ed|ing)?\b", 12, "Launch"),
     (r"\bmilestone\s+payment\b|\bachieves?\s+milestone\b", 16, "Milestone"),
-    (r"\binsider\s+(?:buying|purchase)\b|\bceo\s+purchases?\s+shares\b",
-     20, "Insider buy"),
-    (r"\bjoins?\s+(?:the\s+)?(?:russell|s&p)\b|\bindex\s+inclusion\b",
-     20, "Index add"),
+    (
+        r"\binsider\s+(?:buying|purchase)\b|\bceo\s+purchases?\s+shares\b",
+        20,
+        "Insider buy",
+    ),
+    (r"\bjoins?\s+(?:the\s+)?(?:russell|s&p)\b|\bindex\s+inclusion\b", 20, "Index add"),
     (r"\bdividend\s+(?:increase|initiation)\b|\bspecial\s+dividend\b", 18, "Dividend"),
     (r"\bnamed\s+to\b|\bappoints?\b.*\b(?:ceo|cfo|president)\b", 8, "Management"),
 ]
 
 # Money magnitudes inside a catalyst headline scale it up.
-MONEY_RE = re.compile(
-    r"\$\s?([\d,.]+)\s*(billion|million|bn|mm|m|b)\b", re.IGNORECASE
-)
+MONEY_RE = re.compile(r"\$\s?([\d,.]+)\s*(billion|million|bn|mm|m|b)\b", re.IGNORECASE)
 
 # Dilution / distress language — flagged, and score-damped.
 DILUTION = [
@@ -96,17 +116,27 @@ DILUTION = [
 DISTRESS = [
     (r"\bgoing\s+concern\b", "Going concern"),
     (r"\bchapter\s+11\b|\bbankruptcy\b|\breceivership\b", "Bankruptcy"),
-    (r"\bdeficiency\s+letter\b|\bnon[- ]compliance\s+with\s+nasdaq\b"
-     r"|\bdelisting\b", "Delisting risk"),
-    (r"\bclass\s+action\b|\bsecurities\s+fraud\b|\bsec\s+investigation\b",
-     "Litigation"),
+    (
+        r"\bdeficiency\s+letter\b|\bnon[- ]compliance\s+with\s+nasdaq\b"
+        r"|\bdelisting\b",
+        "Delisting risk",
+    ),
+    (
+        r"\bclass\s+action\b|\bsecurities\s+fraud\b|\bsec\s+investigation\b",
+        "Litigation",
+    ),
     (r"\brestat(?:es|ement|ing)\b", "Restatement"),
-    (r"\bclinical\s+hold\b|\bfails?\s+to\s+meet\b|\bmissed\s+(?:the\s+)?"
-     r"primary\s+endpoint\b|\bdiscontinu(?:es|ed|ing)\s+(?:the\s+)?(?:trial|study)\b",
-     "Trial fail"),
+    (
+        r"\bclinical\s+hold\b|\bfails?\s+to\s+meet\b|\bmissed\s+(?:the\s+)?"
+        r"primary\s+endpoint\b|"
+        r"\bdiscontinu(?:es|ed|ing)\s+(?:the\s+)?(?:trial|study)\b",
+        "Trial fail",
+    ),
     (r"\bcomplete\s+response\s+letter\b|\bcrl\b", "CRL"),
-    (r"\bwithdraws?\s+guidance\b|\bcuts?\s+guidance\b|\blowers?\s+guidance\b",
-     "Guidance cut"),
+    (
+        r"\bwithdraws?\s+guidance\b|\bcuts?\s+guidance\b|\blowers?\s+guidance\b",
+        "Guidance cut",
+    ),
 ]
 
 # Noise that should never reach the board.
@@ -120,7 +150,8 @@ JUNK = re.compile(
 
 _COMPILED = [
     (re.compile(p, re.IGNORECASE), pts, tag)
-    for group in (TIER_A, TIER_B, TIER_C) for p, pts, tag in group
+    for group in (TIER_A, TIER_B, TIER_C)
+    for p, pts, tag in group
 ]
 _DILUTION = [(re.compile(p, re.IGNORECASE), t) for p, t in DILUTION]
 _DISTRESS = [(re.compile(p, re.IGNORECASE), t) for p, t in DISTRESS]
@@ -156,13 +187,17 @@ def score(headline: str, body: str = "", source_weight: float = 1.0) -> dict:
     # Flags are evaluated first and always reported, even when nothing bullish
     # matched — a bare offering scores zero but you still want it labelled if
     # you widen the filters or pull the row up by hand.
-    dilution = [t for p, t in _DILUTION
-                if p.search(headline) or p.search(body[:400])]
+    dilution = [t for p, t in _DILUTION if p.search(headline) or p.search(body[:400])]
     distress = [t for p, t in _DISTRESS if p.search(headline)]
 
     if JUNK.search(headline):
-        return {"score": 0, "tags": [], "dilution": dilution[:2],
-                "distress": distress[:2], "junk": True}
+        return {
+            "score": 0,
+            "tags": [],
+            "dilution": dilution[:2],
+            "distress": distress[:2],
+            "junk": True,
+        }
 
     hits: list[tuple[int, str]] = []
     for pattern, points, tag in _COMPILED:
@@ -172,21 +207,26 @@ def score(headline: str, body: str = "", source_weight: float = 1.0) -> dict:
             hits.append((int(points * 0.4), tag))
 
     if not hits:
-        return {"score": 0, "tags": [], "dilution": dilution[:2],
-                "distress": distress[:2], "junk": False}
+        return {
+            "score": 0,
+            "tags": [],
+            "dilution": dilution[:2],
+            "distress": distress[:2],
+            "junk": False,
+        }
 
     # Strongest hit counts fully; each additional one contributes less, so
     # keyword-stuffed releases can't outrank a single real catalyst.
     hits.sort(key=lambda h: -h[0])
     raw = 0.0
     for i, (points, _) in enumerate(hits):
-        raw += points * (0.45 ** i)
+        raw += points * (0.45**i)
 
     raw *= _money_multiplier(headline)
     raw *= source_weight
 
     if dilution:
-        raw *= 0.45          # damped, not deleted — you still want to see it
+        raw *= 0.45  # damped, not deleted — you still want to see it
     if distress:
         raw *= 0.20
 
@@ -215,5 +255,5 @@ def heat(row: dict) -> float:
     if rvol:
         value += min(25.0, (float(rvol) - 1.0) * 6.0)
     age_min = max(0.0, row.get("age_seconds", 0) / 60.0)
-    value += max(0.0, 18.0 - age_min * 0.9)     # first ~20 minutes get a boost
+    value += max(0.0, 18.0 - age_min * 0.9)  # first ~20 minutes get a boost
     return value

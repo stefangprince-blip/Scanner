@@ -16,10 +16,21 @@ _WS_RE = re.compile(r"\s+")
 _ENTITY_RE = re.compile(r"&(#?\w+);")
 
 _ENTITIES = {
-    "amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'",
-    "nbsp": " ", "rsquo": "\u2019", "lsquo": "\u2018",
-    "ldquo": "\u201c", "rdquo": "\u201d", "mdash": "\u2014",
-    "ndash": "\u2013", "hellip": "\u2026", "#39": "'", "#34": '"',
+    "amp": "&",
+    "lt": "<",
+    "gt": ">",
+    "quot": '"',
+    "apos": "'",
+    "nbsp": " ",
+    "rsquo": "\u2019",
+    "lsquo": "\u2018",
+    "ldquo": "\u201c",
+    "rdquo": "\u201d",
+    "mdash": "\u2014",
+    "ndash": "\u2013",
+    "hellip": "\u2026",
+    "#39": "'",
+    "#34": '"',
 }
 
 

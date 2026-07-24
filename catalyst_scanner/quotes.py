@@ -41,6 +41,7 @@ class YFinanceProvider(QuoteProvider):
 
     def __init__(self):
         import yfinance  # imported lazily so the app runs without it
+
         self._yf = yfinance
         self._fund_cache: dict[str, dict] = {}
         self._fund_lock = threading.Lock()
@@ -54,21 +55,23 @@ class YFinanceProvider(QuoteProvider):
         data: dict = {"_at": time.time()}
         try:
             tk = self._yf.Ticker(ticker)
-            info = {}
+            info: dict = {}
             try:
                 info = tk.get_info() or {}
             except Exception:
                 info = getattr(tk, "info", {}) or {}
-            data.update({
-                "name": info.get("shortName") or info.get("longName"),
-                "exchange": info.get("exchange"),
-                "market_cap": info.get("marketCap"),
-                "float_shares": info.get("floatShares"),
-                "shares_out": info.get("sharesOutstanding"),
-                "avg_volume": info.get("averageVolume10days")
-                              or info.get("averageVolume"),
-                "sector": info.get("sector"),
-            })
+            data.update(
+                {
+                    "name": info.get("shortName") or info.get("longName"),
+                    "exchange": info.get("exchange"),
+                    "market_cap": info.get("marketCap"),
+                    "float_shares": info.get("floatShares"),
+                    "shares_out": info.get("sharesOutstanding"),
+                    "avg_volume": info.get("averageVolume10days")
+                    or info.get("averageVolume"),
+                    "sector": info.get("sector"),
+                }
+            )
         except Exception as exc:
             log.debug("fundamentals failed for %s: %s", ticker, exc)
 
@@ -85,8 +88,7 @@ class YFinanceProvider(QuoteProvider):
             chg = None
             if last and prev:
                 chg = (last - prev) / prev * 100.0
-            return {"last": last, "change_pct": chg, "volume": vol,
-                    "prev_close": prev}
+            return {"last": last, "change_pct": chg, "volume": vol, "prev_close": prev}
         except Exception as exc:
             log.debug("quote failed for %s: %s", ticker, exc)
             return {}
@@ -97,8 +99,12 @@ class YFinanceProvider(QuoteProvider):
         out: dict[str, dict] = {}
         try:
             df = self._yf.download(
-                tickers=" ".join(tickers), period="2d", interval="1d",
-                progress=False, group_by="ticker", threads=True,
+                tickers=" ".join(tickers),
+                period="2d",
+                interval="1d",
+                progress=False,
+                group_by="ticker",
+                threads=True,
                 auto_adjust=False,
             )
             for sym in tickers:
@@ -111,7 +117,9 @@ class YFinanceProvider(QuoteProvider):
                         out[sym] = {
                             "last": last,
                             "prev_close": prev,
-                            "change_pct": (last - prev) / prev * 100.0 if prev else None,
+                            "change_pct": (
+                                (last - prev) / prev * 100.0 if prev else None
+                            ),
                             "volume": int(vols.iloc[-1]) if len(vols) else None,
                         }
                 except Exception:
@@ -161,17 +169,21 @@ class WebullProvider(QuoteProvider):
             return cached
         data = {"_at": time.time()}
         try:
-            raw = self._first(self.client.get_company_profile(
-                category=self.category, symbol=ticker))
-            data.update({
-                "name": raw.get("name") or raw.get("companyName"),
-                "exchange": raw.get("exchangeCode") or raw.get("exchange"),
-                "market_cap": _num(raw.get("marketValue") or raw.get("marketCap")),
-                "shares_out": _num(raw.get("totalShares")),
-                "float_shares": _num(raw.get("outstandingShares")
-                                     or raw.get("floatShares")),
-                "sector": raw.get("sector"),
-            })
+            raw = self._first(
+                self.client.get_company_profile(category=self.category, symbol=ticker)
+            )
+            data.update(
+                {
+                    "name": raw.get("name") or raw.get("companyName"),
+                    "exchange": raw.get("exchangeCode") or raw.get("exchange"),
+                    "market_cap": _num(raw.get("marketValue") or raw.get("marketCap")),
+                    "shares_out": _num(raw.get("totalShares")),
+                    "float_shares": _num(
+                        raw.get("outstandingShares") or raw.get("floatShares")
+                    ),
+                    "sector": raw.get("sector"),
+                }
+            )
         except Exception as exc:
             log.debug("webull fundamentals failed for %s: %s", ticker, exc)
         with self._lock:
@@ -185,12 +197,14 @@ class WebullProvider(QuoteProvider):
         if not tickers:
             return {}
         out: dict[str, dict] = {}
-        for i in range(0, len(tickers), 100):   # API caps symbols per call
-            chunk = tickers[i:i + 100]
+        for i in range(0, len(tickers), 100):  # API caps symbols per call
+            chunk = tickers[i : i + 100]
             try:
                 raw = self.client.get_stock_snapshot(
-                    category=self.category, symbols=",".join(chunk),
-                    extend_hour_required=True, overnight_required=False,
+                    category=self.category,
+                    symbols=",".join(chunk),
+                    extend_hour_required=True,
+                    overnight_required=False,
                 )
                 rows = raw.get("data", raw) if isinstance(raw, dict) else raw
                 for row in rows if isinstance(rows, list) else []:
@@ -203,9 +217,13 @@ class WebullProvider(QuoteProvider):
                     out[sym] = {
                         "last": last,
                         "prev_close": prev,
-                        "change_pct": chg * 100.0 if chg is not None
-                                      else ((last - prev) / prev * 100.0
-                                            if last and prev else None),
+                        "change_pct": (
+                            chg * 100.0
+                            if chg is not None
+                            else (
+                                (last - prev) / prev * 100.0 if last and prev else None
+                            )
+                        ),
                         "volume": _num(row.get("volume")),
                     }
             except Exception as exc:
@@ -228,8 +246,10 @@ def build(name: str | None = None, client=None) -> QuoteProvider:
         try:
             return YFinanceProvider()
         except ImportError:
-            log.warning("yfinance not installed — running without market data. "
-                        "pip install yfinance")
+            log.warning(
+                "yfinance not installed — running without market data. "
+                "pip install yfinance"
+            )
             return NullProvider()
     if name == "webull":
         return WebullProvider(client=client)

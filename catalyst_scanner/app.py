@@ -28,12 +28,14 @@ def create_app(scanner: Scanner) -> Flask:
     def api_rows():
         include_filtered = request.args.get("all") == "1"
         rows = scanner.rows(include_filtered=include_filtered)
-        return jsonify({
-            "rows": rows,
-            "count": len(rows),
-            "ttl_seconds": config.ALERT_TTL_SECONDS,
-            "health": scanner.health(),
-        })
+        return jsonify(
+            {
+                "rows": rows,
+                "count": len(rows),
+                "ttl_seconds": config.ALERT_TTL_SECONDS,
+                "health": scanner.health(),
+            }
+        )
 
     @app.route("/api/health")
     def api_health():
