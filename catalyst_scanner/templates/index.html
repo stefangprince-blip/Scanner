@@ -606,7 +606,7 @@ function chartUrlForTicker(ticker){
   return `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`;
 }
 function chartTabUrlForTicker(ticker){
-  return `/mobile-chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`;
+  return `/mobile-chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}&window=30m`;
 }
 function isMobileViewport(){
   return window.matchMedia('(max-width: 900px)').matches;

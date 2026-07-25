@@ -847,6 +847,60 @@ def test_api_candlestick_patterns_uses_hover_time_chart_data(tmp_path, monkeypat
             pass
 
 
+def test_api_candlestick_patterns_applies_requested_window(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
+    stub_candles = [{"o": 1.0, "h": 1.2, "l": 0.9, "c": 1.1} for _ in range(300)]
+
+    def fake_get_chart_candles(ticker, interval):
+        assert ticker == "ABCD"
+        assert interval == "5m"
+        return stub_candles, "5m"
+
+    monkeypatch.setattr(app_mod, "_get_chart_candles", fake_get_chart_candles)
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "chart_patterns_window.db")),
+    )
+    try:
+        app = create_app(scn)
+        c = app.test_client()
+        resp = c.get("/api/candlestick-patterns?ticker=ABCD&interval=5m&window=2h")
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["used_interval"] == "5m"
+        assert payload["requested_window"] == "2h"
+        assert payload["candles_analyzed"] == 24
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_api_chart_label_uses_requested_window(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
+    stub_candles = [{"o": 10.0, "h": 10.2, "l": 9.8, "c": 10.1} for _ in range(120)]
+
+    monkeypatch.setattr(app_mod, "_get_chart_candles", lambda _ticker, _interval: (stub_candles, "3m"))
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "chart_window_label.db")),
+    )
+    try:
+        app = create_app(scn)
+        c = app.test_client()
+        resp = c.get("/api/chart?ticker=ABCD&interval=3m&window=24h")
+        assert resp.status_code == 200
+        assert b"Last 24h" in resp.data
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
 def test_force_scan_runs_both_scan_paths(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
@@ -918,12 +972,16 @@ def test_mobile_chart_route_renders_live_refresh_page(tmp_path, monkeypatch):
     try:
         app = create_app(scn)
         c = app.test_client()
-        resp = c.get("/mobile-chart?ticker=ABCD&interval=5m")
+        resp = c.get("/mobile-chart?ticker=ABCD&interval=5m&window=2h")
         assert resp.status_code == 200
         body = resp.data
         assert b"ABCD Live Chart" in body
+        assert b"data-win=\"30m\"" in body
+        assert b"data-win=\"2h\"" in body
+        assert b"data-win=\"24h\"" in body
         assert b"/api/chart?ticker=" in body
         assert b"/api/candlestick-patterns?ticker=" in body
+        assert b"&window=" in body
         assert b"setInterval(refreshData, 3000)" in body
     finally:
         try:

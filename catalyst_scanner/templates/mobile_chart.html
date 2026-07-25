@@ -18,7 +18,12 @@ html,body{margin:0; background:var(--bg); color:var(--text); font-family:system-
   background:var(--panel); color:var(--text); border:1px solid var(--rule);
   border-radius:4px; padding:4px 8px; font-size:12px
 }
+.win button{
+  background:var(--panel); color:var(--text); border:1px solid var(--rule);
+  border-radius:4px; padding:4px 8px; font-size:12px
+}
 .tf button.active{border-color:var(--warm); color:var(--warm)}
+.win button.active{border-color:var(--warm); color:var(--warm)}
 .meta{font-size:12px; color:var(--dim)}
 .card{background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:8px}
 #chart{display:block; width:100%; border:1px solid var(--rule); border-radius:6px; background:#0b1226}
@@ -37,6 +42,11 @@ li{margin:0 0 3px 0}
       <button type="button" data-tf="3m">3m</button>
       <button type="button" data-tf="5m">5m</button>
     </div>
+    <div class="win">
+      <button type="button" data-win="30m">30m</button>
+      <button type="button" data-win="2h">2h</button>
+      <button type="button" data-win="24h">24h</button>
+    </div>
     <div class="meta">Auto-refresh every 3s</div>
   </div>
   <div class="card">
@@ -47,13 +57,21 @@ li{margin:0 0 3px 0}
 <script>
 const ticker = {{ ticker|tojson }};
 let interval = {{ interval|tojson }};
+let windowSel = {{ window|tojson }};
 const chartEl = document.getElementById('chart');
 const noteEl = document.getElementById('note');
 const tfButtons = Array.from(document.querySelectorAll('[data-tf]'));
+const windowButtons = Array.from(document.querySelectorAll('[data-win]'));
 
 function setActiveTf(){
   tfButtons.forEach(btn => {
     btn.classList.toggle('active', btn.getAttribute('data-tf') === interval);
+  });
+}
+
+function setActiveWindow(){
+  windowButtons.forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-win') === windowSel);
   });
 }
 
@@ -76,15 +94,16 @@ function renderNote(payload){
     `<div><b>Candlestick score:</b> <b class="${scoreClass}">${score > 0 ? '+' : ''}${score}</b> ` +
     `| <b>Bias:</b> ${payload.bias || 'neutral'} ` +
     `| <b>TF:</b> ${payload.used_interval || interval} ` +
+    `| <b>Window:</b> ${payload.requested_window || windowSel} ` +
     `| <b>Bars:</b> ${Number(payload.candles_analyzed || 0)}</div>` +
     `<div>Bullish patterns: ${Number(payload.bullish_patterns || 0)} · Bearish patterns: ${Number(payload.bearish_patterns || 0)}</div>` +
     `<ul>${top || '<li>No multi-candle pattern match in recent bars.</li>'}</ul>`;
 }
 
 async function refreshData(){
-  chartEl.src = `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&ts=${Date.now()}`;
+  chartEl.src = `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&window=${encodeURIComponent(windowSel)}&ts=${Date.now()}`;
   try {
-    const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}`, {cache:'no-store'});
+    const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&window=${encodeURIComponent(windowSel)}`, {cache:'no-store'});
     if (!resp.ok) throw new Error('pattern request failed');
     const payload = await resp.json();
     renderNote(payload);
@@ -100,12 +119,27 @@ tfButtons.forEach(btn => {
     const u = new URL(window.location.href);
     u.searchParams.set('ticker', ticker);
     u.searchParams.set('interval', interval);
+    u.searchParams.set('window', windowSel);
+    history.replaceState(null, '', u.toString());
+    refreshData();
+  });
+});
+
+windowButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    windowSel = btn.getAttribute('data-win') || '30m';
+    setActiveWindow();
+    const u = new URL(window.location.href);
+    u.searchParams.set('ticker', ticker);
+    u.searchParams.set('interval', interval);
+    u.searchParams.set('window', windowSel);
     history.replaceState(null, '', u.toString());
     refreshData();
   });
 });
 
 setActiveTf();
+setActiveWindow();
 refreshData();
 setInterval(refreshData, 3000);
 </script>

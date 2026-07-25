@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -19,6 +20,7 @@ log = logging.getLogger("scanner.app")
 SETTINGS_PATH = Path(__file__).with_name("settings.json")
 VALID_SCALP_PROFILES = {"balanced", "news_first", "momentum_first"}
 VALID_WATCHLIST_PRESETS = {"all", "small_cap_momentum", "biotech_catalyst", "large_cap_liquidation"}
+VALID_CHART_WINDOWS = {"30m": 30, "2h": 120, "24h": 1440}
 
 
 def _bounded_int(value, default: int, low: int, high: int) -> int:
@@ -99,6 +101,21 @@ def _sanitize_shared_filters(value) -> dict:
     return clean
 
 
+def _normalized_chart_window(value) -> str:
+    key = str(value or "30m").strip().lower()
+    if key in VALID_CHART_WINDOWS:
+        return key
+    return "30m"
+
+
+def _chart_window_label(window_key: str) -> str:
+    return {
+        "30m": "Last 30m",
+        "2h": "Last 2h",
+        "24h": "Last 24h",
+    }.get(window_key, "Last 30m")
+
+
 def _fetch_raw_yahoo_candles(ticker: str, interval: str, data_range: str) -> list[dict]:
     params = urlencode({"interval": interval, "range": data_range})
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{params}"
@@ -151,25 +168,32 @@ def _aggregate_3m(one_minute: list[dict]) -> list[dict]:
 def _get_chart_candles(ticker: str, requested_interval: str) -> tuple[list[dict] | None, str | None]:
     requested_interval = requested_interval if requested_interval in {"1m", "3m", "5m"} else "1m"
     fallback_order = [requested_interval] + [i for i in ("1m", "3m", "5m") if i != requested_interval]
-    candles_per_30m = {"1m": 30, "3m": 10, "5m": 6}
     for interval in fallback_order:
         try:
             if interval == "1m":
-                base = _fetch_raw_yahoo_candles(ticker, "1m", "1d")
-                candidate = base[-candles_per_30m["1m"]:]
+                base = _fetch_raw_yahoo_candles(ticker, "1m", "5d")
+                candidate = base
             elif interval == "3m":
-                base = _fetch_raw_yahoo_candles(ticker, "1m", "1d")
+                base = _fetch_raw_yahoo_candles(ticker, "1m", "5d")
                 candidate = _aggregate_3m(base)
-                candidate = candidate[-candles_per_30m["3m"]:]
             else:
                 base = _fetch_raw_yahoo_candles(ticker, "5m", "5d")
-                candidate = base[-candles_per_30m["5m"]:]
+                candidate = base
         except Exception:
             continue
         if len(candidate) < 2:
             continue
         return candidate, interval
     return None, None
+
+
+def _slice_candles_for_window(candles: list[dict], interval: str, window_key: str) -> list[dict]:
+    if not candles:
+        return []
+    window_minutes = VALID_CHART_WINDOWS.get(window_key, 30)
+    interval_minutes = {"1m": 1, "3m": 3, "5m": 5}.get(interval, 1)
+    bars = max(2, int(math.ceil(window_minutes / float(interval_minutes))))
+    return candles[-bars:]
 
 
 def analyze_candlestick_patterns(candles: list[dict]) -> dict:
@@ -452,7 +476,13 @@ def create_app(scanner: Scanner) -> Flask:
         interval = (request.args.get("interval") or "1m").strip().lower()
         if interval not in {"1m", "3m", "5m"}:
             interval = "1m"
-        return render_template("mobile_chart.html", ticker=ticker, interval=interval)
+        window = _normalized_chart_window(request.args.get("window"))
+        return render_template(
+            "mobile_chart.html",
+            ticker=ticker,
+            interval=interval,
+            window=window,
+        )
 
     @app.route("/api/rows")
     def api_rows():
@@ -683,8 +713,13 @@ self.addEventListener('notificationclick', function(event) {
             return ('missing ticker', 400)
 
         requested_interval = (request.args.get('interval') or '1m').strip().lower()
+        requested_window = _normalized_chart_window(request.args.get("window"))
         candles, used_interval = _get_chart_candles(ticker, requested_interval)
 
+        if candles is not None and used_interval is not None:
+            candles = _slice_candles_for_window(candles, used_interval, requested_window)
+            if len(candles) < 2:
+                candles = None
         if candles is not None and used_interval is not None:
             w = 360
             h = 170
@@ -725,7 +760,7 @@ self.addEventListener('notificationclick', function(event) {
                 )
 
             last_close = candles[-1]["c"]
-            label = f"{ticker} Yahoo {used_interval} - Last 30m"
+            label = f"{ticker} Yahoo {used_interval} - {_chart_window_label(requested_window)}"
             svg = (
                 f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' viewBox='0 0 {w} {h}'>"
                 "<rect width='100%' height='100%' fill='#0b1226' />"
@@ -754,12 +789,14 @@ self.addEventListener('notificationclick', function(event) {
         if not ticker:
             return jsonify({"error": "missing ticker"}), 400
         requested_interval = (request.args.get('interval') or '1m').strip().lower()
+        requested_window = _normalized_chart_window(request.args.get("window"))
         candles, used_interval = _get_chart_candles(ticker, requested_interval)
         if candles is None or used_interval is None:
             return jsonify(
                 {
                     "ticker": ticker,
                     "requested_interval": requested_interval,
+                    "requested_window": requested_window,
                     "used_interval": None,
                     "candles_analyzed": 0,
                     "candlestick_score": 0,
@@ -770,11 +807,13 @@ self.addEventListener('notificationclick', function(event) {
                     "supported_patterns": [],
                 }
             )
+        candles = _slice_candles_for_window(candles, used_interval, requested_window)
         analysis = analyze_candlestick_patterns(candles)
         return jsonify(
             {
                 "ticker": ticker,
                 "requested_interval": requested_interval,
+                "requested_window": requested_window,
                 "used_interval": used_interval,
                 "candles_analyzed": len(candles),
                 **analysis,
