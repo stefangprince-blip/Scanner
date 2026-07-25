@@ -563,6 +563,64 @@ def test_session_info_types():
     assert _is_trading_window() == expected_open
 
 
+def test_rvol_uses_last_tick_timing_when_market_is_closed(monkeypatch):
+    import datetime
+    import zoneinfo
+
+    et = zoneinfo.ZoneInfo("America/New_York")
+    last_tick = datetime.datetime(2026, 7, 24, 16, 0, tzinfo=et).timestamp()
+    monkeypatch.setattr(
+        sc,
+        "_session_info",
+        lambda: {"type": "closed", "elapsed_minutes": 0.0, "window_minutes": 0.0},
+    )
+
+    quote = {
+        "volume": 1_000_000,
+        "avg_volume": 1_000_000,
+        "market_state": "CLOSED",
+        "last_trade_ts": last_tick,
+    }
+    rvol = sc._rvol_for_quote(quote)
+    assert rvol is not None
+    assert abs(rvol - 1.0) < 0.01
+
+
+def test_closed_market_force_scan_does_not_overstate_rvol_alerts(tmp_path, monkeypatch):
+    import datetime
+    import zoneinfo
+
+    et = zoneinfo.ZoneInfo("America/New_York")
+    last_tick = datetime.datetime(2026, 7, 24, 16, 0, tzinfo=et).timestamp()
+    monkeypatch.setattr(
+        sc,
+        "_session_info",
+        lambda: {"type": "closed", "elapsed_minutes": 0.0, "window_minutes": 0.0},
+    )
+
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "closed_force_scan_rvol.db")),
+    )
+    try:
+        scn._maybe_add_volume_catalyst(
+            "EODV",
+            {
+                "last": 2.0,
+                "volume": 1_000_000,
+                "avg_volume": 1_000_000,
+                "market_state": "CLOSED",
+                "last_trade_ts": last_tick,
+            },
+        )
+        assert not any(a.get("ticker") == "EODV" for a in scn.store.active())
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
 def test_momentum_tracking_change_delta(tmp_path):
     """_annotate_quote_momentum must compute change_delta without NameError."""
     scn = sc.Scanner(
@@ -843,6 +901,30 @@ def test_api_force_scan_triggers_background_scan(tmp_path, monkeypatch):
         assert payload["started"] is True
         assert payload["running"] is True
         assert started["count"] == 1
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_mobile_chart_route_renders_live_refresh_page(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "mobile_chart_page.db")),
+    )
+    try:
+        app = create_app(scn)
+        c = app.test_client()
+        resp = c.get("/mobile-chart?ticker=ABCD&interval=5m")
+        assert resp.status_code == 200
+        body = resp.data
+        assert b"ABCD Live Chart" in body
+        assert b"/api/chart?ticker=" in body
+        assert b"/api/candlestick-patterns?ticker=" in body
+        assert b"setInterval(refreshData, 3000)" in body
     finally:
         try:
             scn.store.close()

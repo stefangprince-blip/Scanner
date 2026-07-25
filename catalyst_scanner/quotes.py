@@ -12,6 +12,20 @@ from . import config
 log = logging.getLogger("scanner.quotes")
 
 
+def _epoch_seconds(value) -> float | None:
+    if value in (None, "", "-"):
+        return None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    if ts > 10_000_000_000:
+        ts /= 1000.0
+    return ts
+
+
 class QuoteProvider:
     """Interface. Implement these two methods to plug in any data source."""
 
@@ -316,6 +330,26 @@ class YFinanceProvider(QuoteProvider):
                                 chg = None
                         session_vol = meta.get("regularMarketVolume") or vol
 
+                    regular_ts = _epoch_seconds(meta.get("regularMarketTime"))
+                    pre_ts = _epoch_seconds(meta.get("preMarketTime"))
+                    post_ts = _epoch_seconds(meta.get("postMarketTime"))
+                    bar_ts = None
+                    bar_times = r0.get("timestamp") or []
+                    if bar_times:
+                        for item in reversed(bar_times):
+                            parsed = _epoch_seconds(item)
+                            if parsed is not None:
+                                bar_ts = parsed
+                                break
+                    if market_state in ("PRE", "PREPRE"):
+                        last_trade_ts = pre_ts or regular_ts or bar_ts
+                    elif market_state in ("POST", "POSTPOST"):
+                        last_trade_ts = post_ts or regular_ts or bar_ts
+                    elif market_state in ("REGULAR", "OPEN"):
+                        last_trade_ts = regular_ts or bar_ts
+                    else:
+                        last_trade_ts = regular_ts or post_ts or pre_ts or bar_ts
+
                     return {
                         "last": float(last) if last is not None else None,
                         "prev_close": float(prev) if prev is not None else None,
@@ -325,6 +359,7 @@ class YFinanceProvider(QuoteProvider):
                         "change_pct_10m": round(change_pct_10m, 2) if change_pct_10m is not None else None,
                         "exchange": meta.get("exchangeName") or meta.get("fullExchangeName"),
                         "market_state": market_state,
+                        "last_trade_ts": last_trade_ts,
                     }
         except Exception:
             pass
@@ -344,6 +379,7 @@ class YFinanceProvider(QuoteProvider):
                 "avg_volume": avg_vol,
                 "prev_close": prev,
                 "market_state": "REGULAR",
+                "last_trade_ts": _epoch_seconds(fi.get("lastTradeDate") or fi.get("regularMarketTime")),
             }
         except Exception:
             return {}
@@ -451,6 +487,12 @@ class WebullProvider(QuoteProvider):
                             )
                         ),
                         "volume": _num(row.get("volume")),
+                        "last_trade_ts": _epoch_seconds(
+                            row.get("tradeTime")
+                            or row.get("tradeTimestamp")
+                            or row.get("timestamp")
+                            or row.get("time")
+                        ),
                     }
             except Exception as exc:
                 log.debug("webull snapshot failed: %s", exc)

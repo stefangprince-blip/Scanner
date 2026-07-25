@@ -444,6 +444,16 @@ def create_app(scanner: Scanner) -> Flask:
             min_score=config.MIN_SCORE,
         )
 
+    @app.route("/mobile-chart")
+    def mobile_chart():
+        ticker = (request.args.get("ticker") or "").upper().strip()
+        if not ticker:
+            return ("missing ticker", 400)
+        interval = (request.args.get("interval") or "1m").strip().lower()
+        if interval not in {"1m", "3m", "5m"}:
+            interval = "1m"
+        return render_template("mobile_chart.html", ticker=ticker, interval=interval)
+
     @app.route("/api/rows")
     def api_rows():
         include_filtered = request.args.get("all") == "1"

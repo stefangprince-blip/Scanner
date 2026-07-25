@@ -238,7 +238,7 @@ body.controls-collapsed .spotlight{
   font-size:10px;
   letter-spacing:.04em;
  }
- .mobile-chart-wrap{display:block}
+ .mobile-chart-link{display:inline-block}
 }
  
 body.compact thead th{padding:6px 8px; font-size:9px}
@@ -249,6 +249,21 @@ body.compact .decay{width:42px}
 body.compact .meta{margin-top:4px}
  
 .show-sm{display:none}
+.mobile-chart-link{
+  display:inline-block;
+  margin-left:6px;
+  padding:1px 6px;
+  border:1px solid var(--rule);
+  border-radius:3px;
+  font-family:var(--mono);
+  font-size:10px;
+  letter-spacing:.02em;
+  color:var(--bright);
+  text-decoration:none;
+  vertical-align:middle;
+  background:rgba(255,255,255,.04);
+}
+.mobile-chart-link:hover{border-color:var(--warm); color:var(--warm)}
 
 /* chart popup */
 .chart-popup{
@@ -286,15 +301,6 @@ body.compact .meta{margin-top:4px}
 .chart-pattern-note .score-bearish{color:var(--down)}
 .chart-pattern-note ul{margin:4px 0 0 16px; padding:0; max-height:88px; overflow:auto}
 .chart-pattern-note li{margin:0 0 3px 0}
-.mobile-chart-wrap{display:none; margin-top:8px}
-.mobile-chart-wrap img{
-  display:block;
-  width:100%;
-  max-width:360px;
-  height:auto;
-  border:1px solid var(--rule);
-  border-radius:4px;
-}
 </style>
 </head>
 <body>
@@ -598,6 +604,9 @@ const FILTER_IDS = [
 ];
 function chartUrlForTicker(ticker){
   return `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`;
+}
+function chartTabUrlForTicker(ticker){
+  return `/mobile-chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`;
 }
 function isMobileViewport(){
   return window.matchMedia('(max-width: 900px)').matches;
@@ -1445,11 +1454,11 @@ function render(){
       <td>
         <a class="tick" href="https://finance.yahoo.com/quote/${esc(r.ticker)}"
            target="_blank" rel="noopener">${esc(r.ticker)}</a>
+        <a class="mobile-chart-link" href="${chartTabUrlForTicker(r.ticker)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(r.ticker)} live chart in a new tab" title="Open live chart in a new tab">📈</a>
         <span class="co">${esc(r.name||r.exchange||'')}</span>
         <div class="decay" title="time left in window">
           <i style="width:${(r.ttl_fraction*100).toFixed(1)}%;
            background:${heatColor(r.score)}"></i></div>
-        <div class="mobile-chart-wrap"><img alt="${esc(r.ticker)} chart" src="${chartUrlForTicker(r.ticker)}"></div>
       </td>
       <td class="n hide-sm" data-column="exchange">${esc(r.exchange || '—')}</td>
       <td class="num n">${r.last!=null ? r.last.toFixed(2) : '—'}${r.market_state === 'PRE' || r.market_state === 'PREPRE' ? '<span class="scan-meta">pre</span>' : r.market_state === 'POST' || r.market_state === 'POSTPOST' ? '<span class="scan-meta">ah</span>' : ''}</td>

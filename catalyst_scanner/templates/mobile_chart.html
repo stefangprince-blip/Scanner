@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ ticker }} Live Chart</title>
+<style>
+:root{
+  --bg:#10141C; --panel:#171D28; --rule:#232C3B; --text:#CBD5E1; --dim:#6B7A90;
+  --up:#4FB286; --down:#D1615D; --warm:#D9A441;
+}
+*{box-sizing:border-box}
+html,body{margin:0; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:760px; margin:0 auto; padding:10px}
+.top{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px}
+.title{font-weight:700; letter-spacing:.04em}
+.tf button{
+  background:var(--panel); color:var(--text); border:1px solid var(--rule);
+  border-radius:4px; padding:4px 8px; font-size:12px
+}
+.tf button.active{border-color:var(--warm); color:var(--warm)}
+.meta{font-size:12px; color:var(--dim)}
+.card{background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:8px}
+#chart{display:block; width:100%; border:1px solid var(--rule); border-radius:6px; background:#0b1226}
+#note{margin-top:8px; font-size:12px; line-height:1.45}
+.bull{color:var(--up)} .bear{color:var(--down)}
+ul{margin:6px 0 0 18px; padding:0}
+li{margin:0 0 3px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="title">{{ ticker }} Live Chart</div>
+    <div class="tf">
+      <button type="button" data-tf="1m">1m</button>
+      <button type="button" data-tf="3m">3m</button>
+      <button type="button" data-tf="5m">5m</button>
+    </div>
+    <div class="meta">Auto-refresh every 3s</div>
+  </div>
+  <div class="card">
+    <img id="chart" alt="{{ ticker }} chart">
+    <div id="note">Loading candlestick data...</div>
+  </div>
+</div>
+<script>
+const ticker = {{ ticker|tojson }};
+let interval = {{ interval|tojson }};
+const chartEl = document.getElementById('chart');
+const noteEl = document.getElementById('note');
+const tfButtons = Array.from(document.querySelectorAll('[data-tf]'));
+
+function setActiveTf(){
+  tfButtons.forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-tf') === interval);
+  });
+}
+
+function renderNote(payload){
+  if (!payload) {
+    noteEl.textContent = 'No candlestick analysis available.';
+    return;
+  }
+  const score = Number(payload.candlestick_score || 0);
+  const scoreClass = score > 0 ? 'bull' : (score < 0 ? 'bear' : '');
+  const matched = Array.isArray(payload.matched_patterns) ? payload.matched_patterns : [];
+  const top = matched.slice(0, 10).map(p => {
+    const s = Number(p.score || 0);
+    const cls = s > 0 ? 'bull' : (s < 0 ? 'bear' : '');
+    const ago = Number(p.bars_ago || 0);
+    const when = ago === 0 ? 'now' : `${ago} bars ago`;
+    return `<li><span class="${cls}">${p.name || 'Pattern'}</span> (${when}, ${s > 0 ? '+' : ''}${s})</li>`;
+  }).join('');
+  noteEl.innerHTML =
+    `<div><b>Candlestick score:</b> <b class="${scoreClass}">${score > 0 ? '+' : ''}${score}</b> ` +
+    `| <b>Bias:</b> ${payload.bias || 'neutral'} ` +
+    `| <b>TF:</b> ${payload.used_interval || interval} ` +
+    `| <b>Bars:</b> ${Number(payload.candles_analyzed || 0)}</div>` +
+    `<div>Bullish patterns: ${Number(payload.bullish_patterns || 0)} · Bearish patterns: ${Number(payload.bearish_patterns || 0)}</div>` +
+    `<ul>${top || '<li>No multi-candle pattern match in recent bars.</li>'}</ul>`;
+}
+
+async function refreshData(){
+  chartEl.src = `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}&ts=${Date.now()}`;
+  try {
+    const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(interval)}`, {cache:'no-store'});
+    if (!resp.ok) throw new Error('pattern request failed');
+    const payload = await resp.json();
+    renderNote(payload);
+  } catch (e) {
+    noteEl.textContent = 'Candlestick analysis unavailable.';
+  }
+}
+
+tfButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    interval = btn.getAttribute('data-tf') || '1m';
+    setActiveTf();
+    const u = new URL(window.location.href);
+    u.searchParams.set('ticker', ticker);
+    u.searchParams.set('interval', interval);
+    history.replaceState(null, '', u.toString());
+    refreshData();
+  });
+});
+
+setActiveTf();
+refreshData();
+setInterval(refreshData, 3000);
+</script>
+</body>
+</html>

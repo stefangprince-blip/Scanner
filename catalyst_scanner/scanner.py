@@ -105,6 +105,83 @@ def _rvol(volume, avg_daily_volume, elapsed_minutes: float | None = None,
         elapsed = max(1.0, info["elapsed_minutes"]) if info["elapsed_minutes"] else 1.0
     return (vol * window) / (elapsed * avg)
 
+
+def _coerce_epoch_seconds(raw) -> float | None:
+    try:
+        ts = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    # Some providers emit ms epochs.
+    if ts > 10_000_000_000:
+        ts /= 1000.0
+    return ts
+
+
+def _session_context_from_quote(quote: dict) -> tuple[str, float] | None:
+    ts = _coerce_epoch_seconds((quote or {}).get("last_trade_ts"))
+    if ts is None:
+        return None
+    dt = datetime.datetime.fromtimestamp(ts, tz=_ET)
+    state = str((quote or {}).get("market_state") or "").upper()
+
+    if state in {"PRE", "PREPRE"}:
+        session_type = "premarket"
+        window_minutes = _PREMARKET_MINUTES
+        start = dt.replace(hour=_PREMARKET_START_H, minute=0, second=0, microsecond=0)
+    elif state in {"POST", "POSTPOST"}:
+        session_type = "after_hours"
+        window_minutes = _AFTERHOURS_MINUTES
+        start = dt.replace(hour=_REGULAR_CLOSE_H, minute=0, second=0, microsecond=0)
+    elif state in {"REGULAR", "OPEN", "CLOSED"}:
+        session_type = "regular"
+        window_minutes = _REGULAR_MINUTES
+        start = dt.replace(hour=_REGULAR_OPEN_H, minute=_REGULAR_OPEN_M, second=0, microsecond=0)
+    else:
+        minute_of_day = (dt.hour * 60) + dt.minute
+        pre_start = _PREMARKET_START_H * 60
+        reg_start = (_REGULAR_OPEN_H * 60) + _REGULAR_OPEN_M
+        reg_end = _REGULAR_CLOSE_H * 60
+        ah_end = _AFTERHOURS_END_H * 60
+        if pre_start <= minute_of_day < reg_start:
+            session_type = "premarket"
+            window_minutes = _PREMARKET_MINUTES
+            start = dt.replace(hour=_PREMARKET_START_H, minute=0, second=0, microsecond=0)
+        elif reg_start <= minute_of_day < reg_end:
+            session_type = "regular"
+            window_minutes = _REGULAR_MINUTES
+            start = dt.replace(hour=_REGULAR_OPEN_H, minute=_REGULAR_OPEN_M, second=0, microsecond=0)
+        elif reg_end <= minute_of_day < ah_end:
+            session_type = "after_hours"
+            window_minutes = _AFTERHOURS_MINUTES
+            start = dt.replace(hour=_REGULAR_CLOSE_H, minute=0, second=0, microsecond=0)
+        else:
+            # Outside session hours, use a conservative regular-session baseline.
+            session_type = "regular"
+            window_minutes = _REGULAR_MINUTES
+            start = dt.replace(hour=_REGULAR_OPEN_H, minute=_REGULAR_OPEN_M, second=0, microsecond=0)
+
+    elapsed = max(1.0, (dt - start).total_seconds() / 60.0)
+    elapsed = min(window_minutes, elapsed)
+    return session_type, elapsed
+
+
+def _rvol_for_quote(quote: dict) -> float | None:
+    info = _session_info()
+    session_type = info["type"]
+    elapsed_minutes = None
+    if session_type == "closed":
+        context = _session_context_from_quote(quote or {})
+        if context is not None:
+            session_type, elapsed_minutes = context
+    return _rvol(
+        (quote or {}).get("volume"),
+        (quote or {}).get("avg_volume"),
+        elapsed_minutes=elapsed_minutes,
+        session_type=session_type,
+    )
+
 from . import config, quotes as quotes_mod, rssparse, scoring
 from .feeds import FeedManager
 from .store import Store
@@ -412,7 +489,7 @@ class Scanner:
         except (TypeError, ValueError):
             avg_now = None
 
-        rvol_now = _rvol(volume_now, avg_now)
+        rvol_now = _rvol_for_quote(out)
         change_prev = prev.get("change_pct")
         volume_prev = prev.get("volume")
         rvol_prev = prev.get("rvol")
@@ -675,7 +752,7 @@ class Scanner:
         if not vol or not avg:
             return
         try:
-            rvol = _rvol(vol, avg)
+            rvol = _rvol_for_quote(quote)
             if rvol is None:
                 return
         except (TypeError, ValueError, ZeroDivisionError):
@@ -1154,7 +1231,7 @@ class Scanner:
             avg_vol = q.get("avg_volume")
             vol = q.get("volume")
             sess = _session_info()
-            rvol = _rvol(vol, avg_vol, session_type=sess["type"])
+            rvol = _rvol_for_quote(q)
             dollar_volume = (q.get("last") * vol) if (q.get("last") and vol) else None
             market_cap = q.get("market_cap")
             shares_out = q.get("shares_out")
