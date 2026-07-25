@@ -217,6 +217,7 @@ class Scanner:
         self._us_market_exchange: dict[str, str] = {}
         self._filtered_news_candidates: dict[str, dict] = {}
         self._filtered_news_last_check: dict[str, float] = {}
+        self._filtered_scan_seen_at: dict[str, float] = {}
         self._quote_momentum: dict[str, dict] = {}
         self._active_news_last_check: dict[str, float] = {}
         self._last_market_scan_at = 0.0
@@ -284,17 +285,24 @@ class Scanner:
         self._quote_cursor = (start + batch_size) % len(symbols)
         return batch
 
-    def _batched_quotes(self, symbols: list[str], chunk_size: int, workers: int = 1) -> dict[str, dict]:
+    def _batched_quotes(
+        self,
+        symbols: list[str],
+        chunk_size: int,
+        workers: int = 1,
+        minimal: bool = False,
+    ) -> dict[str, dict]:
         if not symbols:
             return {}
+        quote_fn = self.provider.quotes_minimal if minimal else self.provider.quotes
         if chunk_size <= 0 or len(symbols) <= chunk_size:
-            return self.provider.quotes(symbols)
+            return quote_fn(symbols)
         if workers <= 1:
             out: dict[str, dict] = {}
             for i in range(0, len(symbols), chunk_size):
                 chunk = symbols[i : i + chunk_size]
                 try:
-                    out.update(self.provider.quotes(chunk))
+                    out.update(quote_fn(chunk))
                 except Exception:
                     for sym in chunk:
                         out.setdefault(sym, {})
@@ -302,7 +310,7 @@ class Scanner:
         chunks = [symbols[i : i + chunk_size] for i in range(0, len(symbols), chunk_size)]
         out: dict[str, dict] = {}
         with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-            futures = {executor.submit(self.provider.quotes, chunk): chunk for chunk in chunks}
+            futures = {executor.submit(quote_fn, chunk): chunk for chunk in chunks}
             for future in as_completed(futures):
                 chunk = futures[future]
                 try:
@@ -317,9 +325,18 @@ class Scanner:
             return
         chunk_size = int(getattr(config, "US_MARKET_SCAN_CHUNK_SIZE", 250) or 250)
         workers = int(getattr(config, "US_MARKET_SCAN_WORKERS", 3) or 3)
-        market_live = self._batched_quotes(symbols, chunk_size, workers=max(1, workers))
+        market_live = self._batched_quotes(
+            symbols,
+            chunk_size,
+            workers=max(1, workers),
+            minimal=True,
+        )
         for sym in symbols:
-            merged = self._merge_quote_with_fundamentals(sym, market_live.get(sym, {}))
+            merged = self._merge_quote_with_fundamentals(
+                sym,
+                market_live.get(sym, {}),
+                include_fundamentals=False,
+            )
             self.store.set_quote(sym, merged)
             self._maybe_add_us_market_catalyst(sym, merged)
             self._maybe_add_volume_catalyst(sym, merged)
@@ -370,7 +387,13 @@ class Scanner:
             scan_symbols = scan_symbols[:max_symbols]
             chunk_size = max(1, int(getattr(config, "FILTERED_SCAN_CHUNK_SIZE", 20) or 20))
             live = self._batched_quotes(scan_symbols, chunk_size)
+            now = time.time()
+            cutoff = now - (24 * 60 * 60)
+            stale = [k for k, seen_at in self._filtered_scan_seen_at.items() if seen_at < cutoff]
+            for k in stale:
+                self._filtered_scan_seen_at.pop(k, None)
             for sym in scan_symbols:
+                self._filtered_scan_seen_at[sym.upper()] = now
                 merged = self._merge_quote_with_fundamentals(sym, live.get(sym, {}))
                 self.store.set_quote(sym, merged)
                 self._maybe_add_volume_catalyst(sym, merged)
@@ -487,19 +510,31 @@ class Scanner:
 
         return visible + unquoted
 
-    def _merge_quote_with_fundamentals(self, ticker: str, quote_data: dict) -> dict:
+    def _merge_quote_with_fundamentals(
+        self,
+        ticker: str,
+        quote_data: dict,
+        include_fundamentals: bool = True,
+    ) -> dict:
         merged = dict(quote_data or {})
+        prev_stored = self.store.get_quote(ticker)
         if not merged.get("exchange"):
             ex = self._us_market_exchange.get(ticker.upper())
+            if not ex:
+                ex = prev_stored.get("exchange")
             if ex:
                 merged["exchange"] = ex
-        for key, value in self._fundamentals(ticker).items():
-            if value is not None or merged.get(key) is None:
-                merged[key] = value
+        if include_fundamentals:
+            for key, value in self._fundamentals(ticker).items():
+                if value is not None or merged.get(key) is None:
+                    merged[key] = value
+        else:
+            for key in ("name", "market_cap", "float_shares", "shares_out", "avg_volume", "sector"):
+                if merged.get(key) is None and prev_stored.get(key) is not None:
+                    merged[key] = prev_stored.get(key)
         # If the new quote is missing 3m/10m change data (chart API fell back to
         # fast_info), carry forward the previous stored values — they're only a
         # few seconds old and far better than showing '—' every other cycle.
-        prev_stored = self.store.get_quote(ticker)
         for k in ("change_pct_3m", "change_pct_10m"):
             if merged.get(k) is None and prev_stored.get(k) is not None:
                 # Only carry forward if the stored quote is recent (< 3 minutes)
@@ -860,15 +895,22 @@ class Scanner:
     def _research_rvol_news(self, ticker: str) -> dict | None:
         if not getattr(config, "RVOL_NEWS_RESEARCH_ENABLED", False):
             return None
+        sym = str(ticker or "").upper().strip()
+        if not sym:
+            return None
+        if sym not in self._filtered_scan_seen_at:
+            # Only run news research after a ticker has passed through the
+            # filtered scanner path. This keeps market-wide scans lightweight.
+            return None
         now = time.time()
-        cached = self._rvol_news_cache.get(ticker)
+        cached = self._rvol_news_cache.get(sym)
         ttl = int(getattr(config, "RVOL_NEWS_RESEARCH_CACHE_SECONDS", 60) or 60)
         if cached and (now - float(cached.get("_at", 0))) < ttl:
             return cached.get("news")
 
         url = (
             "https://feeds.finance.yahoo.com/rss/2.0/headline"
-            f"?s={ticker}&region=US&lang=en-US"
+            f"?s={sym}&region=US&lang=en-US"
         )
         best: dict | None = None
         try:
@@ -900,7 +942,7 @@ class Scanner:
         except Exception:
             best = None
 
-        self._rvol_news_cache[ticker] = {"_at": now, "news": best}
+        self._rvol_news_cache[sym] = {"_at": now, "news": best}
         return best
 
     def _queue_filtered_symbol_for_news(self, ticker: str, quote: dict) -> None:

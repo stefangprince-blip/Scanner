@@ -41,6 +41,10 @@ class QuoteProvider:
         """Batch fetch. Override when the API supports multi-symbol calls."""
         return {t: self.quote(t) for t in tickers}
 
+    def quotes_minimal(self, tickers: list[str]) -> dict[str, dict]:
+        """Lean batch fetch for high-throughput scans (only required fields)."""
+        return self.quotes(tickers)
+
 
 class NullProvider(QuoteProvider):
     """No market data. Catalyst scoring only — useful for testing feeds."""
@@ -383,6 +387,101 @@ class YFinanceProvider(QuoteProvider):
             }
         except Exception:
             return {}
+
+    def quotes_minimal(self, tickers: list[str]) -> dict[str, dict]:
+        if not tickers:
+            return {}
+        out: dict[str, dict] = {}
+        symbols = [str(t or "").upper().strip() for t in tickers]
+        symbols = [s for s in symbols if s]
+        for i in range(0, len(symbols), 100):
+            chunk = symbols[i : i + 100]
+            try:
+                resp = self._http.get(
+                    "https://query1.finance.yahoo.com/v7/finance/quote",
+                    params={"symbols": ",".join(chunk)},
+                    headers={"User-Agent": config.USER_AGENT},
+                    timeout=6,
+                )
+                if resp.status_code != 200:
+                    for sym in chunk:
+                        out.setdefault(sym, {})
+                    continue
+                payload = resp.json() if resp.content else {}
+                rows = ((payload.get("quoteResponse") or {}).get("result") or [])
+                by_symbol = {
+                    str(r.get("symbol") or "").upper(): r
+                    for r in rows
+                    if isinstance(r, dict)
+                }
+                for sym in chunk:
+                    row = by_symbol.get(sym)
+                    if not row:
+                        out.setdefault(sym, {})
+                        continue
+                    market_state = str(row.get("marketState") or "REGULAR").upper()
+                    reg_price = _num(row.get("regularMarketPrice"))
+                    prev = _num(row.get("regularMarketPreviousClose") or row.get("previousClose"))
+                    pre_price = _num(row.get("preMarketPrice"))
+                    post_price = _num(row.get("postMarketPrice"))
+
+                    if market_state in {"PRE", "PREPRE"}:
+                        last = pre_price if pre_price is not None else reg_price
+                        pre_chg = row.get("preMarketChangePercent")
+                        if pre_chg is not None:
+                            chg = float(pre_chg)
+                        elif last is not None and prev not in (None, 0):
+                            chg = ((last - prev) / prev) * 100.0
+                        else:
+                            chg = None
+                        volume = _num(row.get("regularMarketVolume"))
+                        last_trade_ts = _epoch_seconds(
+                            row.get("preMarketTime")
+                            or row.get("regularMarketTime")
+                            or row.get("postMarketTime")
+                        )
+                    elif market_state in {"POST", "POSTPOST"}:
+                        last = post_price if post_price is not None else reg_price
+                        post_chg = row.get("postMarketChangePercent")
+                        if post_chg is not None:
+                            chg = float(post_chg)
+                        elif last is not None and prev not in (None, 0):
+                            chg = ((last - prev) / prev) * 100.0
+                        else:
+                            chg = None
+                        volume = _num(row.get("regularMarketVolume"))
+                        last_trade_ts = _epoch_seconds(
+                            row.get("postMarketTime")
+                            or row.get("regularMarketTime")
+                            or row.get("preMarketTime")
+                        )
+                    else:
+                        last = reg_price
+                        if last is not None and prev not in (None, 0):
+                            chg = ((last - prev) / prev) * 100.0
+                        else:
+                            chg = None
+                        volume = _num(row.get("regularMarketVolume"))
+                        last_trade_ts = _epoch_seconds(row.get("regularMarketTime"))
+
+                    out[sym] = {
+                        "last": last,
+                        "prev_close": prev,
+                        "change_pct": round(chg, 2) if isinstance(chg, (float, int)) else None,
+                        "volume": volume,
+                        "avg_volume": _num(
+                            row.get("averageDailyVolume3Month")
+                            or row.get("averageDailyVolume10Day")
+                        ),
+                        "exchange": row.get("fullExchangeName") or row.get("exchange"),
+                        "market_state": market_state,
+                        "last_trade_ts": last_trade_ts,
+                    }
+            except Exception as exc:
+                log.debug("yfinance minimal quote batch failed: %s", exc)
+                for sym in chunk:
+                    out.setdefault(sym, {})
+        return out
 
     def quotes(self, tickers: list[str]) -> dict[str, dict]:
         if not tickers:

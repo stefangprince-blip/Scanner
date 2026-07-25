@@ -996,6 +996,94 @@ def test_market_scan_batches_cover_all_symbols_before_restart(tmp_path):
             pass
 
 
+def test_market_scan_uses_minimal_quotes_and_skips_full_fundamentals(tmp_path):
+    class FakeProvider:
+        def __init__(self):
+            self.minimal_calls = 0
+            self.full_calls = 0
+
+        def quotes(self, symbols):
+            self.full_calls += 1
+            return {s: {"last": 2.0, "volume": 500_000, "market_state": "REGULAR"} for s in symbols}
+
+        def quotes_minimal(self, symbols):
+            self.minimal_calls += 1
+            return {
+                s: {
+                    "last": 2.0,
+                    "volume": 500_000,
+                    "avg_volume": 200_000,
+                    "market_state": "REGULAR",
+                }
+                for s in symbols
+            }
+
+        def fundamentals(self, _ticker):
+            raise AssertionError("fundamentals should not be fetched in minimal market scan")
+
+    provider = FakeProvider()
+    scn = sc.Scanner(
+        quote_provider=provider,
+        store=store.Store(str(tmp_path / "minimal_market_scan.db")),
+    )
+    try:
+        orig_enabled = config.US_MARKET_SCAN_ENABLED
+        orig_ind_enabled = config.RVOL_INDEPENDENT_ENABLED
+        orig_batch = config.US_MARKET_SCAN_BATCH_SIZE
+        config.US_MARKET_SCAN_ENABLED = True
+        config.RVOL_INDEPENDENT_ENABLED = False
+        config.US_MARKET_SCAN_BATCH_SIZE = 2
+        scn._us_market_symbols = ["AAA", "BBB", "CCC", "DDD"]
+        scn._us_market_symbols_at = time.time()
+        scn._us_market_cursor = 0
+        scn._run_market_universe_scan(full_pass=True)
+        assert provider.minimal_calls > 0
+        assert provider.full_calls == 0
+    finally:
+        config.US_MARKET_SCAN_ENABLED = orig_enabled
+        config.RVOL_INDEPENDENT_ENABLED = orig_ind_enabled
+        config.US_MARKET_SCAN_BATCH_SIZE = orig_batch
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_news_research_runs_only_after_filtered_scan_seen(tmp_path):
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "news_gate.db")),
+    )
+    calls = {"count": 0}
+
+    class FakeResp:
+        status_code = 200
+        content = b"<rss><channel></channel></rss>"
+
+    def fake_get(*_args, **_kwargs):
+        calls["count"] += 1
+        return FakeResp()
+
+    orig_enabled = config.RVOL_NEWS_RESEARCH_ENABLED
+    config.RVOL_NEWS_RESEARCH_ENABLED = True
+    scn._http.get = fake_get
+    try:
+        # Not seen by filtered scanner yet -> no external call.
+        assert scn._research_rvol_news("ABCD") is None
+        assert calls["count"] == 0
+
+        # Once seen in filtered scanner path -> research call is allowed.
+        scn._filtered_scan_seen_at["ABCD"] = time.time()
+        assert scn._research_rvol_news("ABCD") is None
+        assert calls["count"] == 1
+    finally:
+        config.RVOL_NEWS_RESEARCH_ENABLED = orig_enabled
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
 def test_api_force_scan_triggers_background_scan(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
