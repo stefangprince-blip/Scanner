@@ -303,6 +303,7 @@ body.compact .meta{margin-top:4px}
     <label>US scan s <input type="number" id="f-us-scan-seconds" min="5" max="600" step="1"></label>
     <label>Window h <input type="number" id="f-window-hours" min="0.2" max="48" step="0.1"></label>
     <button id="f-apply-runtime" type="button">Apply speed/window</button>
+    <button id="f-force-scan" type="button">Force scan</button>
     <label>Sort <select id="f-sort">
       <option value="heat">Heat</option>
       <option value="score">Score</option>
@@ -915,6 +916,25 @@ if (applyRuntimeBtn) {
         tick();
       }
     } catch(e){}
+  });
+}
+const forceScanBtn = el('f-force-scan');
+if (forceScanBtn) {
+  forceScanBtn.addEventListener('click', async () => {
+    const originalLabel = forceScanBtn.textContent;
+    forceScanBtn.disabled = true;
+    forceScanBtn.textContent = 'Force scanning...';
+    try {
+      const resp = await fetch('/api/force-scan', {
+        method: 'POST',
+        cache: 'no-store'
+      });
+      if (resp.ok) {
+        await tick();
+      }
+    } catch(e){}
+    forceScanBtn.disabled = false;
+    forceScanBtn.textContent = originalLabel;
   });
 }
 

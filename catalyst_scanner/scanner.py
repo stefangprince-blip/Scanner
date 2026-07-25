@@ -148,6 +148,7 @@ class Scanner:
         # is fast even when hundreds of historical alerts are in the store.
         self._visible_tickers: list[str] = []
         self._visible_tickers_lock = threading.Lock()
+        self._scan_lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -273,16 +274,41 @@ class Scanner:
                 now = time.time()
                 market_interval = max(5, int(getattr(config, "US_MARKET_SCAN_SECONDS", 20) or 20))
                 filtered_interval = max(2, int(getattr(config, "FILTERED_SCAN_SECONDS", 3) or 3))
-                if (now - self._last_filtered_scan_at) >= filtered_interval:
-                    self._run_filtered_results_scan()
-                    self._last_filtered_scan_at = now
-                if (now - self._last_market_scan_at) >= market_interval:
-                    self._run_market_universe_scan()
-                    self._last_market_scan_at = now
+                with self._scan_lock:
+                    if (now - self._last_filtered_scan_at) >= filtered_interval:
+                        self._run_filtered_results_scan()
+                        self._last_filtered_scan_at = now
+                    if (now - self._last_market_scan_at) >= market_interval:
+                        self._run_market_universe_scan()
+                        self._last_market_scan_at = now
                 self.stats["last_quote_poll"] = time.time()
             except Exception:
                 log.exception("quote loop error")
             self._stop.wait(max(0.5, float(getattr(config, "QUOTE_REFRESH_SECONDS", 1) or 1)))
+
+    def force_scan(self) -> dict:
+        """Run an immediate scan cycle regardless of market session."""
+        ran_filtered = 0
+        ran_market = 0
+        started_at = time.time()
+        with self._scan_lock:
+            self._run_filtered_results_scan()
+            ran_filtered = 1
+            self._run_market_universe_scan()
+            ran_market = 1
+            now = time.time()
+            self._last_filtered_scan_at = now
+            self._last_market_scan_at = now
+            self.stats["last_quote_poll"] = now
+        return {
+            "forced": True,
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "scans": {
+                "filtered_results": ran_filtered,
+                "market_universe": ran_market,
+            },
+        }
 
     def _quote_symbols(self) -> list[str]:
         """Return the symbols the filtered scan should refresh with chart API data.

@@ -546,6 +546,23 @@ def create_app(scanner: Scanner) -> Flask:
         ttl_seconds = _alert_ttl_seconds(settings)
         return jsonify(scanner.health(ttl_seconds=ttl_seconds))
 
+    @app.route("/api/force-scan", methods=["POST"])
+    def api_force_scan():
+        settings = _load_settings()
+        ttl_seconds = _alert_ttl_seconds(settings)
+        try:
+            result = scanner.force_scan()
+            return jsonify(
+                {
+                    "ok": True,
+                    **result,
+                    "health": scanner.health(ttl_seconds=ttl_seconds),
+                }
+            )
+        except Exception:
+            log.exception("force scan failed")
+            return jsonify({"ok": False, "error": "force scan failed"}), 500
+
     @app.after_request
     def no_cache(resp):
         if request.path.startswith("/api/"):
