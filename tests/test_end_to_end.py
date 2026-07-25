@@ -937,13 +937,15 @@ def test_force_scan_runs_both_scan_paths(tmp_path, monkeypatch):
         quote_provider=quotes.NullProvider(),
         store=store.Store(str(tmp_path / "force_scan.db")),
     )
-    calls = {"filtered": 0, "market": 0}
+    calls = {"filtered": 0, "market": 0, "full_pass": None}
 
     def fake_filtered():
         calls["filtered"] += 1
 
-    def fake_market():
+    def fake_market(full_pass=False):
         calls["market"] += 1
+        calls["full_pass"] = full_pass
+        return {"market_batches": 7, "market_symbols": 420, "independent_scans": 1}
 
     monkeypatch.setattr(scn, "_run_filtered_results_scan", fake_filtered)
     monkeypatch.setattr(scn, "_run_market_universe_scan", fake_market)
@@ -951,12 +953,46 @@ def test_force_scan_runs_both_scan_paths(tmp_path, monkeypatch):
     assert result["forced"] is True
     assert result["scans"]["filtered_results"] == 1
     assert result["scans"]["market_universe"] == 1
+    assert result["scans"]["market_batches"] == 7
+    assert result["scans"]["market_symbols"] == 420
+    assert result["scans"]["independent_scans"] == 1
     assert calls["filtered"] == 1
     assert calls["market"] == 1
+    assert calls["full_pass"] is True
     try:
         scn.store.close()
     except Exception:
         pass
+
+
+def test_market_scan_batches_cover_all_symbols_before_restart(tmp_path):
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "market_batches.db")),
+    )
+    try:
+        orig_enabled = config.US_MARKET_SCAN_ENABLED
+        config.US_MARKET_SCAN_ENABLED = True
+        scn._us_market_symbols = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+        scn._us_market_symbols_at = time.time()
+        scn._us_market_cursor = 2
+        orig_batch = config.US_MARKET_SCAN_BATCH_SIZE
+        config.US_MARKET_SCAN_BATCH_SIZE = 2
+        try:
+            batches = scn._us_market_scan_batches(full_pass=True)
+        finally:
+            config.US_MARKET_SCAN_BATCH_SIZE = orig_batch
+            config.US_MARKET_SCAN_ENABLED = orig_enabled
+        flattened = [sym for batch in batches for sym in batch]
+        assert set(flattened) == {"AAA", "BBB", "CCC", "DDD", "EEE"}
+        assert len(flattened) == 5
+        assert len(batches) == 3
+        assert flattened[:2] == ["CCC", "DDD"]
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
 
 
 def test_api_force_scan_triggers_background_scan(tmp_path, monkeypatch):

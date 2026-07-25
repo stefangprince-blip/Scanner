@@ -9,6 +9,7 @@ import threading
 import time
 import csv
 import zoneinfo
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 
 import requests
@@ -283,47 +284,81 @@ class Scanner:
         self._quote_cursor = (start + batch_size) % len(symbols)
         return batch
 
-    def _batched_quotes(self, symbols: list[str], chunk_size: int) -> dict[str, dict]:
+    def _batched_quotes(self, symbols: list[str], chunk_size: int, workers: int = 1) -> dict[str, dict]:
         if not symbols:
             return {}
         if chunk_size <= 0 or len(symbols) <= chunk_size:
             return self.provider.quotes(symbols)
+        if workers <= 1:
+            out: dict[str, dict] = {}
+            for i in range(0, len(symbols), chunk_size):
+                chunk = symbols[i : i + chunk_size]
+                try:
+                    out.update(self.provider.quotes(chunk))
+                except Exception:
+                    for sym in chunk:
+                        out.setdefault(sym, {})
+            return out
+        chunks = [symbols[i : i + chunk_size] for i in range(0, len(symbols), chunk_size)]
         out: dict[str, dict] = {}
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i : i + chunk_size]
-            try:
-                out.update(self.provider.quotes(chunk))
-            except Exception:
-                for sym in chunk:
-                    out.setdefault(sym, {})
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+            futures = {executor.submit(self.provider.quotes, chunk): chunk for chunk in chunks}
+            for future in as_completed(futures):
+                chunk = futures[future]
+                try:
+                    out.update(future.result() or {})
+                except Exception:
+                    for sym in chunk:
+                        out.setdefault(sym, {})
         return out
 
-    def _run_market_universe_scan(self) -> None:
-        market_scan = self._us_market_scan_symbols()
-        if market_scan:
-            chunk_size = int(getattr(config, "US_MARKET_SCAN_CHUNK_SIZE", 250) or 250)
-            market_live = self._batched_quotes(market_scan, chunk_size)
-            for sym in market_scan:
-                merged = self._merge_quote_with_fundamentals(sym, market_live.get(sym, {}))
-                self.store.set_quote(sym, merged)
-                self._maybe_add_us_market_catalyst(sym, merged)
-                self._maybe_add_volume_catalyst(sym, merged)
+    def _scan_market_symbols(self, symbols: list[str]) -> None:
+        if not symbols:
+            return
+        chunk_size = int(getattr(config, "US_MARKET_SCAN_CHUNK_SIZE", 250) or 250)
+        workers = int(getattr(config, "US_MARKET_SCAN_WORKERS", 3) or 3)
+        market_live = self._batched_quotes(symbols, chunk_size, workers=max(1, workers))
+        for sym in symbols:
+            merged = self._merge_quote_with_fundamentals(sym, market_live.get(sym, {}))
+            self.store.set_quote(sym, merged)
+            self._maybe_add_us_market_catalyst(sym, merged)
+            self._maybe_add_volume_catalyst(sym, merged)
 
+    def _scan_independent_symbols(self) -> int:
         independent = self._independent_symbols_for_scan()
-        if independent:
-            independent_live = self._batched_quotes(independent, 200)
-            for sym in independent:
-                merged = self._merge_quote_with_fundamentals(sym, independent_live.get(sym, {}))
-                self.store.set_quote(sym, merged)
-                self._maybe_add_volume_catalyst(
-                    sym,
-                    merged,
-                    source=config.RVOL_INDEPENDENT_SOURCE,
-                    max_float=config.RVOL_INDEPENDENT_FLOAT_MAX,
-                )
-                self._maybe_add_volume_activity_catalyst(sym, merged)
-                self._maybe_add_volume_momentum_catalyst(sym, merged)
-                self._queue_filtered_symbol_for_news(sym, merged)
+        if not independent:
+            return 0
+        independent_live = self._batched_quotes(independent, 200)
+        for sym in independent:
+            merged = self._merge_quote_with_fundamentals(sym, independent_live.get(sym, {}))
+            self.store.set_quote(sym, merged)
+            self._maybe_add_volume_catalyst(
+                sym,
+                merged,
+                source=config.RVOL_INDEPENDENT_SOURCE,
+                max_float=config.RVOL_INDEPENDENT_FLOAT_MAX,
+            )
+            self._maybe_add_volume_activity_catalyst(sym, merged)
+            self._maybe_add_volume_momentum_catalyst(sym, merged)
+            self._queue_filtered_symbol_for_news(sym, merged)
+        return 1
+
+    def _run_market_universe_scan(self, full_pass: bool = False) -> dict:
+        batches = self._us_market_scan_batches(full_pass=full_pass)
+        batch_count = 0
+        symbol_count = 0
+        for market_scan in batches:
+            if not market_scan:
+                continue
+            self._scan_market_symbols(market_scan)
+            batch_count += 1
+            symbol_count += len(market_scan)
+        independent_ran = self._scan_independent_symbols()
+        return {
+            "market_batches": batch_count,
+            "market_symbols": symbol_count,
+            "independent_scans": independent_ran,
+        }
 
     def _run_filtered_results_scan(self) -> None:
         # _quote_symbols() now returns only currently-visible tickers + up to 20
@@ -373,7 +408,7 @@ class Scanner:
         with self._scan_lock:
             self._run_filtered_results_scan()
             ran_filtered = 1
-            self._run_market_universe_scan()
+            market_result = self._run_market_universe_scan(full_pass=True)
             ran_market = 1
             now = time.time()
             self._last_filtered_scan_at = now
@@ -386,6 +421,9 @@ class Scanner:
             "scans": {
                 "filtered_results": ran_filtered,
                 "market_universe": ran_market,
+                "market_batches": int(market_result.get("market_batches", 0)),
+                "market_symbols": int(market_result.get("market_symbols", 0)),
+                "independent_scans": int(market_result.get("independent_scans", 0)),
             },
         }
 
@@ -602,7 +640,7 @@ class Scanner:
         self._us_market_exchange = exchange_map
         return sorted(found)
 
-    def _us_market_scan_symbols(self) -> list[str]:
+    def _us_market_scan_universe(self) -> list[str]:
         if not getattr(config, "US_MARKET_SCAN_ENABLED", False):
             return []
         now = time.time()
@@ -617,19 +655,34 @@ class Scanner:
                 self._us_market_symbols_at = now
                 if self._us_market_cursor >= len(self._us_market_symbols):
                     self._us_market_cursor = 0
-        if not self._us_market_symbols:
+        return list(self._us_market_symbols)
+
+    def _us_market_scan_symbols(self) -> list[str]:
+        symbols = self._us_market_scan_universe()
+        if not symbols:
             return []
-
         if getattr(config, "US_MARKET_SCAN_FULL_COVERAGE", False):
-            return list(self._us_market_symbols)
-
+            return list(symbols)
         batch_size = int(getattr(config, "US_MARKET_SCAN_BATCH_SIZE", 120) or 120)
-        start = self._us_market_cursor % len(self._us_market_symbols)
+        start = self._us_market_cursor % len(symbols)
         out: list[str] = []
         for i in range(batch_size):
-            out.append(self._us_market_symbols[(start + i) % len(self._us_market_symbols)])
-        self._us_market_cursor = (start + batch_size) % len(self._us_market_symbols)
+            out.append(symbols[(start + i) % len(symbols)])
+        self._us_market_cursor = (start + batch_size) % len(symbols)
         return out
+
+    def _us_market_scan_batches(self, full_pass: bool = False) -> list[list[str]]:
+        symbols = self._us_market_scan_universe()
+        if not symbols:
+            return []
+        if not full_pass and not getattr(config, "US_MARKET_SCAN_FULL_COVERAGE", False):
+            batch = self._us_market_scan_symbols()
+            return [batch] if batch else []
+        batch_size = max(1, int(getattr(config, "US_MARKET_SCAN_BATCH_SIZE", 120) or 120))
+        start = self._us_market_cursor % len(symbols)
+        ordered = symbols[start:] + symbols[:start]
+        self._us_market_cursor = (start + len(ordered)) % len(symbols)
+        return [ordered[i : i + batch_size] for i in range(0, len(ordered), batch_size)]
 
     def _independent_symbols_for_scan(self) -> list[str]:
         if not getattr(config, "RVOL_INDEPENDENT_ENABLED", False):
