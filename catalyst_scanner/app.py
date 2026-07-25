@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+import requests
 
 from flask import Flask, jsonify, render_template, request
 
@@ -21,6 +23,12 @@ SETTINGS_PATH = Path(__file__).with_name("settings.json")
 VALID_SCALP_PROFILES = {"balanced", "news_first", "momentum_first"}
 VALID_WATCHLIST_PRESETS = {"all", "small_cap_momentum", "biotech_catalyst", "large_cap_liquidation"}
 VALID_CHART_WINDOWS = {"30m": 30, "2h": 120, "24h": 1440}
+
+_http = requests.Session()
+_CHART_CACHE_TTL_SECONDS = 2.5
+_CHART_CACHE_MAX_ITEMS = 600
+_chart_cache_lock = threading.Lock()
+_chart_cache: dict[tuple, tuple[float, object]] = {}
 
 
 def _bounded_int(value, default: int, low: int, high: int) -> int:
@@ -116,12 +124,43 @@ def _chart_window_label(window_key: str) -> str:
     }.get(window_key, "Last 30m")
 
 
+def _cache_get(key: tuple):
+    now = time.time()
+    with _chart_cache_lock:
+        item = _chart_cache.get(key)
+        if item is None:
+            return None
+        expires_at, value = item
+        if expires_at < now:
+            _chart_cache.pop(key, None)
+            return None
+        return value
+
+
+def _cache_set(key: tuple, value):
+    now = time.time()
+    with _chart_cache_lock:
+        _chart_cache[key] = (now + _CHART_CACHE_TTL_SECONDS, value)
+        if len(_chart_cache) > _CHART_CACHE_MAX_ITEMS:
+            stale = [k for k, (exp, _) in _chart_cache.items() if exp < now]
+            for k in stale:
+                _chart_cache.pop(k, None)
+            if len(_chart_cache) > _CHART_CACHE_MAX_ITEMS:
+                overflow = len(_chart_cache) - _CHART_CACHE_MAX_ITEMS
+                for k in list(_chart_cache.keys())[:overflow]:
+                    _chart_cache.pop(k, None)
+
+
 def _fetch_raw_yahoo_candles(ticker: str, interval: str, data_range: str) -> list[dict]:
-    params = urlencode({"interval": interval, "range": data_range})
+    cache_key = ("raw", ticker, interval, data_range)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return list(cached)
+    params = urlencode({"interval": interval, "range": data_range, "includePrePost": "true"})
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{params}"
-    req = Request(url, headers={"User-Agent": config.USER_AGENT})
-    with urlopen(req, timeout=8) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    resp = _http.get(url, headers={"User-Agent": config.USER_AGENT}, timeout=8)
+    resp.raise_for_status()
+    payload = resp.json() if resp.content else {}
     result = (payload.get("chart", {}).get("result") or [])
     if not result:
         return []
@@ -143,6 +182,7 @@ def _fetch_raw_yahoo_candles(ticker: str, interval: str, data_range: str) -> lis
         if o is None or h is None or l is None or c is None:
             continue
         candles.append({"o": float(o), "h": float(h), "l": float(l), "c": float(c)})
+    _cache_set(cache_key, candles)
     return candles
 
 
@@ -165,25 +205,37 @@ def _aggregate_3m(one_minute: list[dict]) -> list[dict]:
     return blocks
 
 
-def _get_chart_candles(ticker: str, requested_interval: str) -> tuple[list[dict] | None, str | None]:
+def _get_chart_candles(
+    ticker: str,
+    requested_interval: str,
+    requested_window: str = "30m",
+) -> tuple[list[dict] | None, str | None]:
+    requested_window = _normalized_chart_window(requested_window)
     requested_interval = requested_interval if requested_interval in {"1m", "3m", "5m"} else "1m"
+    cache_key = ("candles", ticker, requested_interval, requested_window)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     fallback_order = [requested_interval] + [i for i in ("1m", "3m", "5m") if i != requested_interval]
+    data_range = "1d" if requested_window in {"30m", "2h"} else "5d"
     for interval in fallback_order:
         try:
             if interval == "1m":
-                base = _fetch_raw_yahoo_candles(ticker, "1m", "5d")
+                base = _fetch_raw_yahoo_candles(ticker, "1m", data_range)
                 candidate = base
             elif interval == "3m":
-                base = _fetch_raw_yahoo_candles(ticker, "1m", "5d")
+                base = _fetch_raw_yahoo_candles(ticker, "1m", data_range)
                 candidate = _aggregate_3m(base)
             else:
-                base = _fetch_raw_yahoo_candles(ticker, "5m", "5d")
+                base = _fetch_raw_yahoo_candles(ticker, "5m", data_range)
                 candidate = base
         except Exception:
             continue
         if len(candidate) < 2:
             continue
+        _cache_set(cache_key, (candidate, interval))
         return candidate, interval
+    _cache_set(cache_key, (None, None))
     return None, None
 
 
@@ -714,7 +766,13 @@ self.addEventListener('notificationclick', function(event) {
 
         requested_interval = (request.args.get('interval') or '1m').strip().lower()
         requested_window = _normalized_chart_window(request.args.get("window"))
-        candles, used_interval = _get_chart_candles(ticker, requested_interval)
+        svg_cache_key = ("svg", ticker, requested_interval, requested_window)
+        cached_svg = _cache_get(svg_cache_key)
+        if isinstance(cached_svg, str) and cached_svg:
+            from flask import Response
+
+            return Response(cached_svg, mimetype='image/svg+xml')
+        candles, used_interval = _get_chart_candles(ticker, requested_interval, requested_window)
 
         if candles is not None and used_interval is not None:
             candles = _slice_candles_for_window(candles, used_interval, requested_window)
@@ -769,6 +827,7 @@ self.addEventListener('notificationclick', function(event) {
                 + "".join(rows)
                 + "</svg>"
             )
+            _cache_set(svg_cache_key, svg)
             from flask import Response
 
             return Response(svg, mimetype='image/svg+xml')
@@ -790,34 +849,38 @@ self.addEventListener('notificationclick', function(event) {
             return jsonify({"error": "missing ticker"}), 400
         requested_interval = (request.args.get('interval') or '1m').strip().lower()
         requested_window = _normalized_chart_window(request.args.get("window"))
-        candles, used_interval = _get_chart_candles(ticker, requested_interval)
+        analysis_cache_key = ("patterns", ticker, requested_interval, requested_window)
+        cached_payload = _cache_get(analysis_cache_key)
+        if isinstance(cached_payload, dict):
+            return jsonify(cached_payload)
+        candles, used_interval = _get_chart_candles(ticker, requested_interval, requested_window)
         if candles is None or used_interval is None:
-            return jsonify(
-                {
-                    "ticker": ticker,
-                    "requested_interval": requested_interval,
-                    "requested_window": requested_window,
-                    "used_interval": None,
-                    "candles_analyzed": 0,
-                    "candlestick_score": 0,
-                    "bias": "neutral",
-                    "matched_patterns": [],
-                    "bullish_patterns": 0,
-                    "bearish_patterns": 0,
-                    "supported_patterns": [],
-                }
-            )
-        candles = _slice_candles_for_window(candles, used_interval, requested_window)
-        analysis = analyze_candlestick_patterns(candles)
-        return jsonify(
-            {
+            payload = {
                 "ticker": ticker,
                 "requested_interval": requested_interval,
                 "requested_window": requested_window,
-                "used_interval": used_interval,
-                "candles_analyzed": len(candles),
-                **analysis,
+                "used_interval": None,
+                "candles_analyzed": 0,
+                "candlestick_score": 0,
+                "bias": "neutral",
+                "matched_patterns": [],
+                "bullish_patterns": 0,
+                "bearish_patterns": 0,
+                "supported_patterns": [],
             }
-        )
+            _cache_set(analysis_cache_key, payload)
+            return jsonify(payload)
+        candles = _slice_candles_for_window(candles, used_interval, requested_window)
+        analysis = analyze_candlestick_patterns(candles)
+        payload = {
+            "ticker": ticker,
+            "requested_interval": requested_interval,
+            "requested_window": requested_window,
+            "used_interval": used_interval,
+            "candles_analyzed": len(candles),
+            **analysis,
+        }
+        _cache_set(analysis_cache_key, payload)
+        return jsonify(payload)
 
     return app

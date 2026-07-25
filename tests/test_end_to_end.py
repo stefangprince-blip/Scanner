@@ -809,6 +809,29 @@ def test_candlestick_pattern_analysis_detects_bullish_engulfing():
     assert result["bias"] == "bullish"
 
 
+def test_get_chart_candles_uses_short_range_for_small_windows(monkeypatch):
+    calls = []
+    sample = [{"o": 1.0, "h": 1.1, "l": 0.9, "c": 1.0} for _ in range(400)]
+
+    def fake_fetch(_ticker, interval, data_range):
+        calls.append((interval, data_range))
+        return sample
+
+    app_mod._chart_cache.clear()
+    monkeypatch.setattr(app_mod, "_fetch_raw_yahoo_candles", fake_fetch)
+
+    candles_short, used_short = app_mod._get_chart_candles("ABCD", "1m", "2h")
+    assert used_short == "1m"
+    assert candles_short is not None
+    assert calls and calls[0] == ("1m", "1d")
+
+    calls.clear()
+    candles_long, used_long = app_mod._get_chart_candles("ABCD", "1m", "24h")
+    assert used_long == "1m"
+    assert candles_long is not None
+    assert calls and calls[0] == ("1m", "5d")
+
+
 def test_api_candlestick_patterns_uses_hover_time_chart_data(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
@@ -818,9 +841,10 @@ def test_api_candlestick_patterns_uses_hover_time_chart_data(tmp_path, monkeypat
         {"o": 9.75, "h": 10.5, "l": 9.7, "c": 10.45},
     ]
 
-    def fake_get_chart_candles(ticker, interval):
+    def fake_get_chart_candles(ticker, interval, requested_window="30m"):
         assert ticker == "ABCD"
         assert interval == "3m"
+        assert requested_window == "30m"
         return stub_candles, "3m"
 
     monkeypatch.setattr(app_mod, "_get_chart_candles", fake_get_chart_candles)
@@ -852,9 +876,10 @@ def test_api_candlestick_patterns_applies_requested_window(tmp_path, monkeypatch
     monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
     stub_candles = [{"o": 1.0, "h": 1.2, "l": 0.9, "c": 1.1} for _ in range(300)]
 
-    def fake_get_chart_candles(ticker, interval):
+    def fake_get_chart_candles(ticker, interval, requested_window="30m"):
         assert ticker == "ABCD"
         assert interval == "5m"
+        assert requested_window == "2h"
         return stub_candles, "5m"
 
     monkeypatch.setattr(app_mod, "_get_chart_candles", fake_get_chart_candles)
@@ -883,7 +908,11 @@ def test_api_chart_label_uses_requested_window(tmp_path, monkeypatch):
     monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
     stub_candles = [{"o": 10.0, "h": 10.2, "l": 9.8, "c": 10.1} for _ in range(120)]
 
-    monkeypatch.setattr(app_mod, "_get_chart_candles", lambda _ticker, _interval: (stub_candles, "3m"))
+    monkeypatch.setattr(
+        app_mod,
+        "_get_chart_candles",
+        lambda _ticker, _interval, _window="30m": (stub_candles, "3m"),
+    )
     scn = sc.Scanner(
         quote_provider=quotes.NullProvider(),
         store=store.Store(str(tmp_path / "chart_window_label.db")),
