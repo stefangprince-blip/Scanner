@@ -204,6 +204,9 @@ class Scanner:
             "last_feed_poll": 0.0,
             "last_quote_poll": 0.0,
             "rejected_by_filter": 0,
+            "us_market_universe_size": 0,
+            "market_symbols_scanned_last": 0,
+            "market_batches_last": 0,
         }
         self._fund_cache: dict[str, dict] = {}
         self._http = requests.Session()
@@ -230,6 +233,7 @@ class Scanner:
         self._scan_lock = threading.Lock()
         self._force_scan_lock = threading.Lock()
         self._force_scan_active = False
+        self._last_closed_market_scan_at = 0.0
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -246,6 +250,14 @@ class Scanner:
             len(self.feeds.feeds),
             type(self.provider).__name__,
         )
+        if getattr(config, "CLOSED_MARKET_BOOTSTRAP_ENABLED", True):
+            t = threading.Thread(
+                target=self._bootstrap_closed_market_snapshot,
+                name="closed-market-bootstrap",
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
 
     def stop(self) -> None:
         self._stop.set()
@@ -361,16 +373,26 @@ class Scanner:
         return 1
 
     def _run_market_universe_scan(self, full_pass: bool = False) -> dict:
-        batches = self._us_market_scan_batches(full_pass=full_pass)
         batch_count = 0
         symbol_count = 0
-        for market_scan in batches:
-            if not market_scan:
-                continue
-            self._scan_market_symbols(market_scan)
-            batch_count += 1
-            symbol_count += len(market_scan)
+        if full_pass:
+            market_scan = self._us_market_scan_universe()
+            if market_scan:
+                self._scan_market_symbols(market_scan)
+                batch_count = 1
+                symbol_count = len(market_scan)
+        else:
+            batches = self._us_market_scan_batches(full_pass=False)
+            for market_scan in batches:
+                if not market_scan:
+                    continue
+                self._scan_market_symbols(market_scan)
+                batch_count += 1
+                symbol_count += len(market_scan)
         independent_ran = self._scan_independent_symbols()
+        self.stats["market_symbols_scanned_last"] = symbol_count
+        self.stats["market_batches_last"] = batch_count
+        self.stats["us_market_universe_size"] = len(self._us_market_symbols)
         return {
             "market_batches": batch_count,
             "market_symbols": symbol_count,
@@ -405,7 +427,20 @@ class Scanner:
         while not self._stop.is_set():
             try:
                 if not _is_trading_window():
-                    # Outside Mon–Fri 4 AM–8 PM ET; sleep and retry
+                    now = time.time()
+                    closed_interval = max(
+                        60,
+                        int(getattr(config, "CLOSED_MARKET_SCAN_SECONDS", 900) or 900),
+                    )
+                    if (now - self._last_closed_market_scan_at) >= closed_interval:
+                        with self._scan_lock:
+                            self._run_market_universe_scan()
+                            self._run_filtered_results_scan()
+                            now = time.time()
+                            self._last_market_scan_at = now
+                            self._last_filtered_scan_at = now
+                            self.stats["last_quote_poll"] = now
+                            self._last_closed_market_scan_at = now
                     self._stop.wait(30.0)
                     continue
                 now = time.time()
@@ -422,6 +457,21 @@ class Scanner:
             except Exception:
                 log.exception("quote loop error")
             self._stop.wait(max(0.5, float(getattr(config, "QUOTE_REFRESH_SECONDS", 1) or 1)))
+
+    def _bootstrap_closed_market_snapshot(self) -> None:
+        if _is_trading_window():
+            return
+        try:
+            with self._scan_lock:
+                self._run_market_universe_scan(full_pass=True)
+                self._run_filtered_results_scan()
+                now = time.time()
+                self._last_market_scan_at = now
+                self._last_filtered_scan_at = now
+                self.stats["last_quote_poll"] = now
+                self._last_closed_market_scan_at = now
+        except Exception:
+            log.exception("closed-market bootstrap scan failed")
 
     def force_scan(self) -> dict:
         """Run an immediate scan cycle regardless of market session."""
@@ -532,6 +582,27 @@ class Scanner:
             for key in ("name", "market_cap", "float_shares", "shares_out", "avg_volume", "sector"):
                 if merged.get(key) is None and prev_stored.get(key) is not None:
                     merged[key] = prev_stored.get(key)
+        # Avoid wiping usable quote fields when a batched quote request misses
+        # a symbol (common during large-universe scans).
+        quote_keys = (
+            "last",
+            "prev_close",
+            "change_pct",
+            "change_pct_3m",
+            "change_pct_10m",
+            "volume",
+            "market_state",
+            "last_trade_ts",
+            "scan_change_delta",
+            "scan_change_accel",
+            "scan_volume_delta",
+            "scan_volume_accel",
+            "scan_rvol_delta",
+            "scan_momentum_updated_at",
+        )
+        for key in quote_keys:
+            if merged.get(key) is None and prev_stored.get(key) is not None:
+                merged[key] = prev_stored.get(key)
         # If the new quote is missing 3m/10m change data (chart API fell back to
         # fast_info), carry forward the previous stored values — they're only a
         # few seconds old and far better than showing '—' every other cycle.
@@ -698,7 +769,15 @@ class Scanner:
             return []
         if getattr(config, "US_MARKET_SCAN_FULL_COVERAGE", False):
             return list(symbols)
-        batch_size = int(getattr(config, "US_MARKET_SCAN_BATCH_SIZE", 120) or 120)
+        base_batch = int(getattr(config, "US_MARKET_SCAN_BATCH_SIZE", 120) or 120)
+        scan_interval = max(5, int(getattr(config, "US_MARKET_SCAN_SECONDS", 20) or 20))
+        target_seconds = max(
+            scan_interval,
+            int(getattr(config, "US_MARKET_SCAN_TARGET_FULL_COVERAGE_SECONDS", 300) or 300),
+        )
+        target_cycles = max(1, (target_seconds + scan_interval - 1) // scan_interval)
+        coverage_batch = max(1, (len(symbols) + target_cycles - 1) // target_cycles)
+        batch_size = min(len(symbols), max(base_batch, coverage_batch))
         start = self._us_market_cursor % len(symbols)
         out: list[str] = []
         for i in range(batch_size):
@@ -1395,6 +1474,9 @@ class Scanner:
             "alerts_active": len(self.store.active(ttl=ttl)),
             "tickers_active": len(self.store.active_tickers(ttl=ttl)),
             "rejected_by_filter": self.stats["rejected_by_filter"],
+            "us_market_universe_size": int(self.stats.get("us_market_universe_size", 0)),
+            "market_symbols_scanned_last": int(self.stats.get("market_symbols_scanned_last", 0)),
+            "market_batches_last": int(self.stats.get("market_batches_last", 0)),
             "provider": type(self.provider).__name__,
             "ttl_hours": ttl / 3600,
             "feeds": self.feeds.status(),

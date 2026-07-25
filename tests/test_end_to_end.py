@@ -996,6 +996,40 @@ def test_market_scan_batches_cover_all_symbols_before_restart(tmp_path):
             pass
 
 
+def test_market_scan_batch_size_targets_full_coverage_window(tmp_path):
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "market_batch_window.db")),
+    )
+    try:
+        orig_enabled = config.US_MARKET_SCAN_ENABLED
+        orig_full = config.US_MARKET_SCAN_FULL_COVERAGE
+        orig_batch = config.US_MARKET_SCAN_BATCH_SIZE
+        orig_interval = config.US_MARKET_SCAN_SECONDS
+        orig_target = config.US_MARKET_SCAN_TARGET_FULL_COVERAGE_SECONDS
+        config.US_MARKET_SCAN_ENABLED = True
+        config.US_MARKET_SCAN_FULL_COVERAGE = False
+        config.US_MARKET_SCAN_BATCH_SIZE = 60
+        config.US_MARKET_SCAN_SECONDS = 30
+        config.US_MARKET_SCAN_TARGET_FULL_COVERAGE_SECONDS = 300
+        scn._us_market_symbols = [f"S{i:05d}" for i in range(1_000)]
+        scn._us_market_symbols_at = time.time()
+        scn._us_market_cursor = 0
+        batch = scn._us_market_scan_symbols()
+        # 1000 symbols across 300s at 30s cadence => ~10 cycles => 100 symbols/scan.
+        assert len(batch) == 100
+    finally:
+        config.US_MARKET_SCAN_ENABLED = orig_enabled
+        config.US_MARKET_SCAN_FULL_COVERAGE = orig_full
+        config.US_MARKET_SCAN_BATCH_SIZE = orig_batch
+        config.US_MARKET_SCAN_SECONDS = orig_interval
+        config.US_MARKET_SCAN_TARGET_FULL_COVERAGE_SECONDS = orig_target
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
 def test_market_scan_uses_minimal_quotes_and_skips_full_fundamentals(tmp_path):
     class FakeProvider:
         def __init__(self):
@@ -1043,6 +1077,78 @@ def test_market_scan_uses_minimal_quotes_and_skips_full_fundamentals(tmp_path):
         config.US_MARKET_SCAN_ENABLED = orig_enabled
         config.RVOL_INDEPENDENT_ENABLED = orig_ind_enabled
         config.US_MARKET_SCAN_BATCH_SIZE = orig_batch
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_market_scan_preserves_previous_quote_when_minimal_batch_misses_symbol(tmp_path):
+    class PartialProvider:
+        def quotes(self, symbols):
+            return {}
+
+        def quotes_minimal(self, symbols):
+            # Simulate the quote endpoint missing this symbol in a bulk response.
+            return {}
+
+        def fundamentals(self, _ticker):
+            return {}
+
+    scn = sc.Scanner(
+        quote_provider=PartialProvider(),
+        store=store.Store(str(tmp_path / "market_quote_preserve.db")),
+    )
+    try:
+        scn.store.set_quote(
+            "ABCD",
+            {
+                "last": 2.35,
+                "prev_close": 2.10,
+                "change_pct": 11.9,
+                "volume": 750_000,
+                "avg_volume": 180_000,
+                "market_state": "REGULAR",
+            },
+        )
+        scn._scan_market_symbols(["ABCD"])
+        q = scn.store.get_quote("ABCD")
+        assert q.get("last") == 2.35
+        assert q.get("volume") == 750_000
+        assert q.get("avg_volume") == 180_000
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_closed_market_bootstrap_runs_full_snapshot(tmp_path, monkeypatch):
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "closed_bootstrap.db")),
+    )
+    calls = {"market": 0, "filtered": 0, "full_pass": None}
+
+    monkeypatch.setattr(sc, "_is_trading_window", lambda: False)
+
+    def fake_market(full_pass=False):
+        calls["market"] += 1
+        calls["full_pass"] = full_pass
+        return {"market_batches": 2, "market_symbols": 100, "independent_scans": 0}
+
+    def fake_filtered():
+        calls["filtered"] += 1
+
+    monkeypatch.setattr(scn, "_run_market_universe_scan", fake_market)
+    monkeypatch.setattr(scn, "_run_filtered_results_scan", fake_filtered)
+    try:
+        scn._bootstrap_closed_market_snapshot()
+        assert calls["market"] == 1
+        assert calls["filtered"] == 1
+        assert calls["full_pass"] is True
+        assert scn.stats["last_quote_poll"] > 0
+    finally:
         try:
             scn.store.close()
         except Exception:
