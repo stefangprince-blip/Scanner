@@ -11,8 +11,8 @@
 # If cloudflared cannot find your origin cert automatically, set:
 #   TUNNEL_ORIGIN_CERT=C:\Users\<YOUR_USER>\.cloudflared\cert.pem
 
-# tunnel: <TUNNEL_ID>
-# credentials-file: C:\Users\<YOUR_USER>\.cloudflared\<TUNNEL_ID>.json
+tunnel: 91546c3d-8e86-42f5-8618-ac2b514b7b90
+credentials-file: C:\Users\Stefan Prince\.cloudflared\91546c3d-8e86-42f5-8618-ac2b514b7b90.json
 
 ingress:
   - hostname: stefanscanner.pgrcapital.org
