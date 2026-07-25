@@ -551,11 +551,12 @@ def create_app(scanner: Scanner) -> Flask:
         settings = _load_settings()
         ttl_seconds = _alert_ttl_seconds(settings)
         try:
-            result = scanner.force_scan()
+            started = scanner.trigger_force_scan()
             return jsonify(
                 {
                     "ok": True,
-                    **result,
+                    "started": started,
+                    "running": scanner.force_scan_running(),
                     "health": scanner.health(ttl_seconds=ttl_seconds),
                 }
             )

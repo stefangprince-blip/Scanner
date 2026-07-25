@@ -789,7 +789,7 @@ def test_api_candlestick_patterns_uses_hover_time_chart_data(tmp_path, monkeypat
             pass
 
 
-def test_api_force_scan_triggers_scans(tmp_path, monkeypatch):
+def test_force_scan_runs_both_scan_paths(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
     scn = sc.Scanner(
@@ -806,6 +806,33 @@ def test_api_force_scan_triggers_scans(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scn, "_run_filtered_results_scan", fake_filtered)
     monkeypatch.setattr(scn, "_run_market_universe_scan", fake_market)
+    result = scn.force_scan()
+    assert result["forced"] is True
+    assert result["scans"]["filtered_results"] == 1
+    assert result["scans"]["market_universe"] == 1
+    assert calls["filtered"] == 1
+    assert calls["market"] == 1
+    try:
+        scn.store.close()
+    except Exception:
+        pass
+
+
+def test_api_force_scan_triggers_background_scan(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "force_scan_api.db")),
+    )
+    started = {"count": 0}
+
+    def fake_trigger():
+        started["count"] += 1
+        return True
+
+    monkeypatch.setattr(scn, "trigger_force_scan", fake_trigger)
+    monkeypatch.setattr(scn, "force_scan_running", lambda: True)
     try:
         app = create_app(scn)
         c = app.test_client()
@@ -813,11 +840,9 @@ def test_api_force_scan_triggers_scans(tmp_path, monkeypatch):
         assert resp.status_code == 200
         payload = resp.get_json()
         assert payload["ok"] is True
-        assert payload["forced"] is True
-        assert payload["scans"]["filtered_results"] == 1
-        assert payload["scans"]["market_universe"] == 1
-        assert calls["filtered"] == 1
-        assert calls["market"] == 1
+        assert payload["started"] is True
+        assert payload["running"] is True
+        assert started["count"] == 1
     finally:
         try:
             scn.store.close()

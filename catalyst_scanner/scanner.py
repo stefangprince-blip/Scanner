@@ -149,6 +149,8 @@ class Scanner:
         self._visible_tickers: list[str] = []
         self._visible_tickers_lock = threading.Lock()
         self._scan_lock = threading.Lock()
+        self._force_scan_lock = threading.Lock()
+        self._force_scan_active = False
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -309,6 +311,28 @@ class Scanner:
                 "market_universe": ran_market,
             },
         }
+
+    def trigger_force_scan(self) -> bool:
+        """Start force_scan in the background. Returns False if already running."""
+        with self._force_scan_lock:
+            if self._force_scan_active:
+                return False
+            self._force_scan_active = True
+
+        def _run():
+            try:
+                self.force_scan()
+            finally:
+                with self._force_scan_lock:
+                    self._force_scan_active = False
+
+        t = threading.Thread(target=_run, name="force-scan", daemon=True)
+        t.start()
+        return True
+
+    def force_scan_running(self) -> bool:
+        with self._force_scan_lock:
+            return self._force_scan_active
 
     def _quote_symbols(self) -> list[str]:
         """Return the symbols the filtered scan should refresh with chart API data.
