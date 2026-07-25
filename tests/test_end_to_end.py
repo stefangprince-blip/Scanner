@@ -976,6 +976,7 @@ def test_mobile_chart_route_renders_live_refresh_page(tmp_path, monkeypatch):
         assert resp.status_code == 200
         body = resp.data
         assert b"ABCD Live Chart" in body
+        assert b"id=\"close-tab\"" in body
         assert b"data-win=\"30m\"" in body
         assert b"data-win=\"2h\"" in body
         assert b"data-win=\"24h\"" in body

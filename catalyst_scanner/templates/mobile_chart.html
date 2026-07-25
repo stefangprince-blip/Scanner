@@ -14,6 +14,17 @@ html,body{margin:0; background:var(--bg); color:var(--text); font-family:system-
 .wrap{max-width:760px; margin:0 auto; padding:10px}
 .top{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px}
 .title{font-weight:700; letter-spacing:.04em}
+.close-tab{
+  margin-left:auto;
+  width:28px;
+  height:28px;
+  line-height:24px;
+  padding:0;
+  border-radius:999px;
+  font-size:16px;
+  font-weight:700;
+  text-transform:none;
+}
 .tf button{
   background:var(--panel); color:var(--text); border:1px solid var(--rule);
   border-radius:4px; padding:4px 8px; font-size:12px
@@ -37,6 +48,7 @@ li{margin:0 0 3px 0}
 <div class="wrap">
   <div class="top">
     <div class="title">{{ ticker }} Live Chart</div>
+    <button id="close-tab" class="close-tab" type="button" title="Close tab" aria-label="Close tab">×</button>
     <div class="tf">
       <button type="button" data-tf="1m">1m</button>
       <button type="button" data-tf="3m">3m</button>
@@ -60,6 +72,7 @@ let interval = {{ interval|tojson }};
 let windowSel = {{ window|tojson }};
 const chartEl = document.getElementById('chart');
 const noteEl = document.getElementById('note');
+const closeTabBtn = document.getElementById('close-tab');
 const tfButtons = Array.from(document.querySelectorAll('[data-tf]'));
 const windowButtons = Array.from(document.querySelectorAll('[data-win]'));
 
@@ -137,6 +150,17 @@ windowButtons.forEach(btn => {
     refreshData();
   });
 });
+
+if (closeTabBtn) {
+  closeTabBtn.addEventListener('click', () => {
+    window.close();
+    setTimeout(() => {
+      if (!window.closed) {
+        window.location.href = '/';
+      }
+    }, 150);
+  });
+}
 
 setActiveTf();
 setActiveWindow();
