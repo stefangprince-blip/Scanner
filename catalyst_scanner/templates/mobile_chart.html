@@ -59,7 +59,7 @@ li{margin:0 0 3px 0}
       <button type="button" data-win="2h">2h</button>
       <button type="button" data-win="24h">24h</button>
     </div>
-    <div class="meta">Auto-refresh every 3s</div>
+    <div class="meta">Auto-refresh every 10s</div>
   </div>
   <div class="card">
     <img id="chart" alt="{{ ticker }} chart">
@@ -165,7 +165,7 @@ if (closeTabBtn) {
 setActiveTf();
 setActiveWindow();
 refreshData();
-setInterval(refreshData, 3000);
+setInterval(refreshData, 10000);
 </script>
 </body>
 </html>

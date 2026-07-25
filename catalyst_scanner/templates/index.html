@@ -1594,6 +1594,8 @@ setInterval(() => {
 let chartPopup = null;
 let chartPopupRequestId = 0;
 let chartPopupHideTimer = null;
+let chartPopupRefreshTimer = null;
+const CHART_REFRESH_WHEN_VISIBLE_MS = 10000;
 
 function cancelHideChart(){
   if (chartPopupHideTimer) {
@@ -1607,6 +1609,13 @@ function scheduleHideChart(delayMs){
   chartPopupHideTimer = setTimeout(() => {
     hideChart();
   }, delayMs);
+}
+
+function stopChartPopupRefresh(){
+  if (chartPopupRefreshTimer) {
+    clearInterval(chartPopupRefreshTimer);
+    chartPopupRefreshTimer = null;
+  }
 }
 
 function positionChartPopup(anchor){
@@ -1665,7 +1674,7 @@ async function showChartForTicker(ticker, anchor){
   chartPopup.addEventListener('mouseenter', () => cancelHideChart());
   chartPopup.addEventListener('mouseleave', () => scheduleHideChart(120));
   const img = document.createElement('img');
-  img.src = chartUrlForTicker(ticker);
+  img.src = `${chartUrlForTicker(ticker)}&ts=${Date.now()}`;
   chartPopup.appendChild(img);
   const note = document.createElement('div');
   note.className = 'chart-pattern-note';
@@ -1673,21 +1682,38 @@ async function showChartForTicker(ticker, anchor){
   chartPopup.appendChild(note);
   document.body.appendChild(chartPopup);
   positionChartPopup(anchor);
-  try {
-    const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`, {cache:'no-store'});
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const payload = await resp.json();
+
+  let refreshInFlight = false;
+  const refreshVisibleChart = async () => {
     if (!chartPopup || requestId !== chartPopupRequestId) return;
-    note.innerHTML = renderPatternNote(payload);
-    positionChartPopup(anchor);
-  } catch (e) {
-    if (!chartPopup || requestId !== chartPopupRequestId) return;
-    note.textContent = 'Candlestick analysis unavailable.';
-    positionChartPopup(anchor);
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    img.src = `${chartUrlForTicker(ticker)}&ts=${Date.now()}`;
+    try {
+      const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`, {cache:'no-store'});
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const payload = await resp.json();
+      if (!chartPopup || requestId !== chartPopupRequestId) return;
+      note.innerHTML = renderPatternNote(payload);
+      positionChartPopup(anchor);
+    } catch (e) {
+      if (!chartPopup || requestId !== chartPopupRequestId) return;
+      note.textContent = 'Candlestick analysis unavailable.';
+      positionChartPopup(anchor);
+    } finally {
+      refreshInFlight = false;
+    }
+  };
+
+  await refreshVisibleChart();
+  if (chartPopup && requestId === chartPopupRequestId) {
+    stopChartPopupRefresh();
+    chartPopupRefreshTimer = setInterval(refreshVisibleChart, CHART_REFRESH_WHEN_VISIBLE_MS);
   }
 }
 function hideChart(){
   cancelHideChart();
+  stopChartPopupRefresh();
   if(chartPopup){ chartPopup.remove(); chartPopup = null; }
   chartPopupRequestId++;
 }

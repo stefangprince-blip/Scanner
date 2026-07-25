@@ -738,6 +738,7 @@ def test_store_demo_and_flask_api(tmp_path):
         resp2 = c.get("/")
         assert resp2.status_code == 200
         assert b"Catalyst" in resp2.data
+        assert b"CHART_REFRESH_WHEN_VISIBLE_MS = 10000" in resp2.data
     finally:
         try:
             st.close()
@@ -1048,7 +1049,7 @@ def test_mobile_chart_route_renders_live_refresh_page(tmp_path, monkeypatch):
         assert b"/api/chart?ticker=" in body
         assert b"/api/candlestick-patterns?ticker=" in body
         assert b"&window=" in body
-        assert b"setInterval(refreshData, 3000)" in body
+        assert b"setInterval(refreshData, 10000)" in body
     finally:
         try:
             scn.store.close()
