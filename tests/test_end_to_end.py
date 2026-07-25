@@ -5,6 +5,7 @@ import json
 import pytest
 
 from catalyst_scanner import config, rssparse, tickers, scoring, store, scanner as sc, quotes
+import catalyst_scanner.app as app_mod
 from catalyst_scanner.app import create_app
 
 
@@ -691,3 +692,98 @@ def test_store_demo_and_flask_api(tmp_path):
         for p in (db1, tmp_path / "t2_pytest.db"):
             if p.exists():
                 p.unlink()
+
+
+def test_shared_filters_are_persisted_and_profile_is_global(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "shared_filters.db")),
+    )
+    try:
+        app = create_app(scn)
+        c = app.test_client()
+
+        payload = {
+            "scalp_profile_current": "news_first",
+            "watchlist_preset": "biotech_catalyst",
+            "shared_filters": {
+                "f-score": "30",
+                "f-news": "yes",
+                "sort_key": "score",
+                "sort_dir": "desc",
+                "watchlist": "biotech_catalyst",
+                "include_filtered": True,
+            },
+        }
+        post_resp = c.post("/api/settings", json=payload)
+        assert post_resp.status_code == 200
+        post_data = post_resp.get_json()
+        assert post_data["scalp_profile_current"] == "news_first"
+        assert post_data["watchlist_preset"] == "biotech_catalyst"
+        assert post_data["shared_filters"]["f-score"] == "30"
+        assert post_data["shared_filters"]["include_filtered"] is True
+
+        get_data = c.get("/api/settings").get_json()
+        assert get_data["scalp_profile_current"] == "news_first"
+        assert get_data["shared_filters"]["sort_key"] == "score"
+
+        # /api/rows should use the globally persisted profile, not per-request overrides.
+        rows_data = c.get("/api/rows?profile=balanced").get_json()
+        assert rows_data["profile"] == "news_first"
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass
+
+
+def test_candlestick_pattern_analysis_detects_bullish_engulfing():
+    candles = [
+        {"o": 10.2, "h": 10.3, "l": 9.7, "c": 9.8},   # bearish
+        {"o": 9.75, "h": 10.5, "l": 9.7, "c": 10.45},  # bullish engulfing
+    ]
+    result = app_mod.analyze_candlestick_patterns(candles)
+    names = {p["name"] for p in result["matched_patterns"]}
+    assert "Bullish Engulfing" in names
+    assert result["candlestick_score"] > 0
+    assert result["bias"] == "bullish"
+
+
+def test_api_candlestick_patterns_uses_hover_time_chart_data(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_mod, "SETTINGS_PATH", settings_path)
+
+    stub_candles = [
+        {"o": 10.2, "h": 10.3, "l": 9.7, "c": 9.8},
+        {"o": 9.75, "h": 10.5, "l": 9.7, "c": 10.45},
+    ]
+
+    def fake_get_chart_candles(ticker, interval):
+        assert ticker == "ABCD"
+        assert interval == "3m"
+        return stub_candles, "3m"
+
+    monkeypatch.setattr(app_mod, "_get_chart_candles", fake_get_chart_candles)
+
+    scn = sc.Scanner(
+        quote_provider=quotes.NullProvider(),
+        store=store.Store(str(tmp_path / "chart_patterns.db")),
+    )
+    try:
+        app = create_app(scn)
+        c = app.test_client()
+        resp = c.get("/api/candlestick-patterns?ticker=ABCD&interval=3m")
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["ticker"] == "ABCD"
+        assert payload["used_interval"] == "3m"
+        assert payload["candles_analyzed"] == 2
+        assert payload["candlestick_score"] > 0
+        assert any(p["name"] == "Bullish Engulfing" for p in payload["matched_patterns"])
+    finally:
+        try:
+            scn.store.close()
+        except Exception:
+            pass

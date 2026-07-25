@@ -239,6 +239,23 @@ body.compact .meta{margin-top:4px}
 /* chart popup */
 .chart-popup{position:fixed; z-index:9999; background:var(--panel-2); border:1px solid var(--rule); padding:6px; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.6);}
 .chart-popup img{display:block; width:360px; height:170px}
+.chart-pattern-note{
+  width:360px;
+  margin-top:6px;
+  border:1px solid rgba(255,255,255,.08);
+  background:rgba(12,18,32,.75);
+  border-radius:4px;
+  padding:6px;
+  font-family:var(--mono);
+  font-size:10px;
+  color:var(--text);
+  line-height:1.4;
+}
+.chart-pattern-note .meta{margin:0 0 4px 0; gap:8px}
+.chart-pattern-note .score-bullish{color:var(--up)}
+.chart-pattern-note .score-bearish{color:var(--down)}
+.chart-pattern-note ul{margin:4px 0 0 16px; padding:0; max-height:88px; overflow:auto}
+.chart-pattern-note li{margin:0 0 3px 0}
 .mobile-chart-wrap{display:none; margin-top:8px}
 .mobile-chart-wrap img{
   display:block;
@@ -590,7 +607,7 @@ function toggleControlsCollapsed(){
     if (id === 'f-sound' && toggles[id]) playAlertSound();
     if (id === 'f-show-filtered') {
       includeFiltered = toggles[id];
-      try { localStorage.setItem('showFiltered', toggles[id] ? '1' : '0'); } catch(e){}
+      queuePersistSharedFilters();
     }
     if (id === 'f-compact') {
       compactView = toggles[id];
@@ -604,13 +621,8 @@ function toggleControlsCollapsed(){
     if (id === 'f-show-filtered' || id === 'f-compact') tick();
   });
 });
-// Apply persisted showFiltered and compact mode to the button state on load
+// Apply persisted compact mode to the button state on load
 try {
-  includeFiltered = (localStorage.getItem('showFiltered') === '1');
-  if (includeFiltered) {
-    toggles['f-show-filtered'] = true;
-    el('f-show-filtered').setAttribute('aria-pressed', 'true');
-  }
   compactView = (localStorage.getItem('compactView') === '1');
   toggles['f-compact'] = compactView;
   applyCompactView();
@@ -650,10 +662,6 @@ if (chartTfEl) {
 }
 const profileEl = el('f-profile');
 if (profileEl) {
-  try {
-    const savedProfile = localStorage.getItem('scalpProfile');
-    if (savedProfile === 'balanced' || savedProfile === 'news_first' || savedProfile === 'momentum_first') scalpProfile = savedProfile;
-  } catch(e){}
   profileEl.value = scalpProfile;
 }
 const watchlistEl = el('f-watchlist');
@@ -719,6 +727,7 @@ function readFilterState(){
   out.sort_key = sortState.key;
   out.sort_dir = sortState.dir;
   out.watchlist = watchlistPreset;
+  out.include_filtered = !!includeFiltered;
   return out;
 }
 function applyFilterState(state){
@@ -747,9 +756,34 @@ function applyFilterState(state){
   }
   if (state.watchlist) watchlistPreset = state.watchlist;
   if (watchlistEl) watchlistEl.value = watchlistPreset;
+  if (Object.prototype.hasOwnProperty.call(state, 'include_filtered')) {
+    includeFiltered = !!state.include_filtered;
+    toggles['f-show-filtered'] = includeFiltered;
+    const filteredBtn = el('f-show-filtered');
+    if (filteredBtn) filteredBtn.setAttribute('aria-pressed', includeFiltered ? 'true' : 'false');
+  }
   syncRangeVisibility();
   updateHeaderSortUI();
   return applied;
+}
+let persistSharedFiltersTimer = null;
+function persistSharedFiltersToServer(){
+  return fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      shared_filters: readFilterState(),
+      scalp_profile_current: scalpProfile,
+      watchlist_preset: watchlistPreset
+    }),
+    cache: 'no-store'
+  });
+}
+function queuePersistSharedFilters(){
+  if (persistSharedFiltersTimer) clearTimeout(persistSharedFiltersTimer);
+  persistSharedFiltersTimer = setTimeout(() => {
+    persistSharedFiltersToServer().catch(()=>{});
+  }, 250);
 }
 function saveProfileFiltersToServer(){
   profileFilters[scalpProfile] = readFilterState();
@@ -757,6 +791,7 @@ function saveProfileFiltersToServer(){
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
+      shared_filters: readFilterState(),
       scalp_profile_filters: profileFilters,
       scalp_profile_current: scalpProfile,
       watchlist_preset: watchlistPreset
@@ -803,8 +838,8 @@ if (applyProfileBtn) {
   applyProfileBtn.addEventListener('click', () => {
     const next = profileEl ? profileEl.value : 'balanced';
     scalpProfile = (next === 'news_first' || next === 'momentum_first') ? next : 'balanced';
-    try { localStorage.setItem('scalpProfile', scalpProfile); } catch(e){}
     applyScalpProfileSettings(scalpProfile);
+    queuePersistSharedFilters();
     tick();
   });
 }
@@ -812,7 +847,6 @@ const saveProfileBtn = el('f-save-profile');
 if (saveProfileBtn) {
   saveProfileBtn.addEventListener('click', () => {
     saveProfileFiltersToServer();
-    try { localStorage.setItem('scalpProfile', scalpProfile); } catch(e){}
   });
 }
 function applyWatchlistPreset(preset){
@@ -846,7 +880,6 @@ function applyWatchlistPreset(preset){
   }
   watchlistPreset = p;
   if (watchlistEl) watchlistEl.value = watchlistPreset;
-  try { localStorage.setItem('watchlistPreset', watchlistPreset); } catch(e){}
   syncRangeVisibility();
   updateHeaderSortUI();
 }
@@ -943,6 +976,13 @@ async function loadScoringSettings() {
       scalpProfile = payload.scalp_profile_current;
       if (profileEl) profileEl.value = scalpProfile;
     }
+    if (payload.watchlist_preset === 'all' || payload.watchlist_preset === 'small_cap_momentum' || payload.watchlist_preset === 'biotech_catalyst' || payload.watchlist_preset === 'large_cap_liquidation') {
+      watchlistPreset = payload.watchlist_preset;
+      if (watchlistEl) watchlistEl.value = watchlistPreset;
+    }
+    if (payload.shared_filters && typeof payload.shared_filters === 'object') {
+      applyFilterState(payload.shared_filters);
+    }
     if (typeof payload.filtered_scan_seconds === 'number' && payload.filtered_scan_seconds >= 2) {
       pollMs = Math.max(2000, Math.round(payload.filtered_scan_seconds * 1000));
     } else if (typeof payload.ui_refresh_seconds === 'number' && payload.ui_refresh_seconds >= 2) {
@@ -980,8 +1020,8 @@ function restoreColumnPrefs(){
 
 FILTER_IDS.forEach(id => {
   const node = el(id);
-  if (node) node.addEventListener('input', render);
-  if (node) node.addEventListener('change', render);
+  if (node) node.addEventListener('input', () => { render(); queuePersistSharedFilters(); });
+  if (node) node.addEventListener('change', () => { render(); queuePersistSharedFilters(); });
 });
 
 [
@@ -1010,6 +1050,7 @@ if (sortSelect) {
     sortState = { key, dir: sortDefaults[key] || 'desc' };
     updateHeaderSortUI();
     render();
+    queuePersistSharedFilters();
   });
 }
 syncRangeVisibility();
@@ -1035,6 +1076,7 @@ document.querySelectorAll('th.sortable[data-sort]').forEach(th => {
     }
     updateHeaderSortUI();
     render();
+    queuePersistSharedFilters();
   });
 });
 
@@ -1200,8 +1242,8 @@ function playAlertSound(){
 
 let data = {rows: [], health: {}};
 const scanStateByTicker = new Map();
-// Persisted preference for showing filtered items
-includeFiltered = (localStorage.getItem('showFiltered') === '1'); // when true, call /api/rows?all=1 to include filtered items
+// Shared preference from /api/settings will override this on load
+includeFiltered = false; // when true, call /api/rows?all=1 to include filtered items
 
 function rowHasNews(r){
   const src = String(r.source || '');
@@ -1438,7 +1480,6 @@ async function tick(){
   try {
     const parts = [];
     if (includeFiltered) parts.push('all=1');
-    if (scalpProfile) parts.push(`profile=${encodeURIComponent(scalpProfile)}`);
     const url = '/api/rows' + (parts.length ? ('?' + parts.join('&')) : '');
     const res = await fetch(url, {cache:'no-store'});
     data = await res.json();
@@ -1460,7 +1501,6 @@ async function tick(){
     if (data.profile) {
       scalpProfile = data.profile;
       if (profileEl) profileEl.value = scalpProfile;
-      try { localStorage.setItem('scalpProfile', scalpProfile); } catch(e){}
     }
     el('s-tick').textContent = new Date().toLocaleTimeString();
     renderFeeds(data.health || {});
@@ -1489,14 +1529,48 @@ setInterval(() => {
 /* ----------------- chart hover popup ------------------ */
 
 let chartPopup = null;
-function showChartForTicker(ticker, anchor){
+let chartPopupRequestId = 0;
+
+function renderPatternNote(payload){
+  if (!payload) return '<div class="chart-pattern-note">Pattern data unavailable.</div>';
+  const score = Number(payload.candlestick_score || 0);
+  const biasClass = score > 0 ? 'score-bullish' : (score < 0 ? 'score-bearish' : '');
+  const usedInterval = esc(payload.used_interval || chartTimeframe);
+  const candlesAnalyzed = Number(payload.candles_analyzed || 0);
+  const matched = Array.isArray(payload.matched_patterns) ? payload.matched_patterns : [];
+  const matchedRows = matched.slice(0, 8).map(p => {
+    const pScore = Number(p.score || 0);
+    const pClass = pScore > 0 ? 'score-bullish' : (pScore < 0 ? 'score-bearish' : '');
+    const when = Number(p.bars_ago || 0);
+    const whenTxt = when === 0 ? 'now' : `${when} bars ago`;
+    return `<li><span class="${pClass}">${esc(p.name || 'Pattern')}</span> (${whenTxt}, score ${pScore > 0 ? '+' : ''}${pScore})</li>`;
+  }).join('');
+  const noMatch = "<li>No multi-candle pattern match in the recent bars.</li>";
+  return `<div class="chart-pattern-note">
+    <div class="meta">
+      <span><b>Candlestick score:</b> <b class="${biasClass}">${score > 0 ? '+' : ''}${score}</b></span>
+      <span><b>Bias:</b> ${esc(payload.bias || 'neutral')}</span>
+      <span><b>TF:</b> ${usedInterval}</span>
+      <span><b>Bars:</b> ${candlesAnalyzed}</span>
+    </div>
+    <div>Bullish patterns: ${Number(payload.bullish_patterns || 0)} · Bearish patterns: ${Number(payload.bearish_patterns || 0)}</div>
+    <ul>${matchedRows || noMatch}</ul>
+  </div>`;
+}
+
+async function showChartForTicker(ticker, anchor){
   if (isMobileViewport()) return;
   hideChart();
+  const requestId = ++chartPopupRequestId;
   chartPopup = document.createElement('div');
   chartPopup.className = 'chart-popup';
   const img = document.createElement('img');
   img.src = chartUrlForTicker(ticker);
   chartPopup.appendChild(img);
+  const note = document.createElement('div');
+  note.className = 'chart-pattern-note';
+  note.textContent = 'Analyzing candlestick patterns...';
+  chartPopup.appendChild(note);
   document.body.appendChild(chartPopup);
   // position near anchor element but keep on-screen
   const rect = anchor.getBoundingClientRect();
@@ -1504,8 +1578,18 @@ function showChartForTicker(ticker, anchor){
   const top = Math.max(8, rect.top - 10);
   chartPopup.style.left = left + 'px';
   chartPopup.style.top = top + 'px';
+  try {
+    const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`, {cache:'no-store'});
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const payload = await resp.json();
+    if (!chartPopup || requestId !== chartPopupRequestId) return;
+    note.innerHTML = renderPatternNote(payload);
+  } catch (e) {
+    if (!chartPopup || requestId !== chartPopupRequestId) return;
+    note.textContent = 'Candlestick analysis unavailable.';
+  }
 }
-function hideChart(){ if(chartPopup){ chartPopup.remove(); chartPopup = null; }}
+function hideChart(){ if(chartPopup){ chartPopup.remove(); chartPopup = null; } chartPopupRequestId++; }
 // Event delegation: show chart on hover for ticker links
 el('board').addEventListener('mouseover', (ev)=>{
   if (isMobileViewport()) return;

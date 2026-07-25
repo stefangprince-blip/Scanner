@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from flask import Flask, jsonify, render_template, request
 
@@ -15,6 +17,8 @@ from . import scoring as scoring_mod
 log = logging.getLogger("scanner.app")
 
 SETTINGS_PATH = Path(__file__).with_name("settings.json")
+VALID_SCALP_PROFILES = {"balanced", "news_first", "momentum_first"}
+VALID_WATCHLIST_PRESETS = {"all", "small_cap_momentum", "biotech_catalyst", "large_cap_liquidation"}
 
 
 def _bounded_int(value, default: int, low: int, high: int) -> int:
@@ -71,6 +75,352 @@ def _save_settings(payload: dict) -> None:
         pass
 
 
+def _normalized_scalp_profile(value) -> str:
+    if value in VALID_SCALP_PROFILES:
+        return value
+    return config.SCALP_STRATEGY_DEFAULT
+
+
+def _normalized_watchlist_preset(value) -> str:
+    if value in VALID_WATCHLIST_PRESETS:
+        return value
+    return "all"
+
+
+def _sanitize_shared_filters(value) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    clean = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(item, (str, int, float, bool)) or item is None:
+            clean[key] = item
+    return clean
+
+
+def _fetch_raw_yahoo_candles(ticker: str, interval: str, data_range: str) -> list[dict]:
+    params = urlencode({"interval": interval, "range": data_range})
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{params}"
+    req = Request(url, headers={"User-Agent": config.USER_AGENT})
+    with urlopen(req, timeout=8) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    result = (payload.get("chart", {}).get("result") or [])
+    if not result:
+        return []
+    quote = ((result[0].get("indicators") or {}).get("quote") or [])
+    if not quote:
+        return []
+    q0 = quote[0]
+    raw_open = q0.get("open") or []
+    raw_high = q0.get("high") or []
+    raw_low = q0.get("low") or []
+    raw_close = q0.get("close") or []
+    candles: list[dict] = []
+    count = min(len(raw_open), len(raw_high), len(raw_low), len(raw_close))
+    for i in range(count):
+        o = raw_open[i]
+        h = raw_high[i]
+        l = raw_low[i]
+        c = raw_close[i]
+        if o is None or h is None or l is None or c is None:
+            continue
+        candles.append({"o": float(o), "h": float(h), "l": float(l), "c": float(c)})
+    return candles
+
+
+def _aggregate_3m(one_minute: list[dict]) -> list[dict]:
+    if len(one_minute) < 3:
+        return []
+    blocks: list[dict] = []
+    for i in range(0, len(one_minute), 3):
+        group = one_minute[i:i + 3]
+        if len(group) < 3:
+            continue
+        blocks.append(
+            {
+                "o": group[0]["o"],
+                "h": max(x["h"] for x in group),
+                "l": min(x["l"] for x in group),
+                "c": group[-1]["c"],
+            }
+        )
+    return blocks
+
+
+def _get_chart_candles(ticker: str, requested_interval: str) -> tuple[list[dict] | None, str | None]:
+    requested_interval = requested_interval if requested_interval in {"1m", "3m", "5m"} else "1m"
+    fallback_order = [requested_interval] + [i for i in ("1m", "3m", "5m") if i != requested_interval]
+    candles_per_30m = {"1m": 30, "3m": 10, "5m": 6}
+    for interval in fallback_order:
+        try:
+            if interval == "1m":
+                base = _fetch_raw_yahoo_candles(ticker, "1m", "1d")
+                candidate = base[-candles_per_30m["1m"]:]
+            elif interval == "3m":
+                base = _fetch_raw_yahoo_candles(ticker, "1m", "1d")
+                candidate = _aggregate_3m(base)
+                candidate = candidate[-candles_per_30m["3m"]:]
+            else:
+                base = _fetch_raw_yahoo_candles(ticker, "5m", "5d")
+                candidate = base[-candles_per_30m["5m"]:]
+        except Exception:
+            continue
+        if len(candidate) < 2:
+            continue
+        return candidate, interval
+    return None, None
+
+
+def analyze_candlestick_patterns(candles: list[dict]) -> dict:
+    n = len(candles)
+    if n < 2:
+        return {
+            "candlestick_score": 0,
+            "bias": "neutral",
+            "matched_patterns": [],
+            "bullish_patterns": 0,
+            "bearish_patterns": 0,
+            "supported_patterns": [],
+        }
+
+    supported_patterns = [
+        "Bullish Engulfing",
+        "Bearish Engulfing",
+        "Piercing Line",
+        "Dark Cloud Cover",
+        "Bullish Harami",
+        "Bearish Harami",
+        "Tweezer Bottom",
+        "Tweezer Top",
+        "Morning Star",
+        "Evening Star",
+        "Three White Soldiers",
+        "Three Black Crows",
+        "Three Inside Up",
+        "Three Inside Down",
+        "Three Outside Up",
+        "Three Outside Down",
+        "Rising Three Methods",
+        "Falling Three Methods",
+    ]
+
+    def body(c):
+        return abs(c["c"] - c["o"])
+
+    def rng(c):
+        return max(c["h"] - c["l"], 1e-9)
+
+    def bull(c):
+        return c["c"] > c["o"]
+
+    def bear(c):
+        return c["c"] < c["o"]
+
+    recent = candles[-min(20, n):]
+    avg_body = sum(body(c) for c in recent) / max(1, len(recent))
+    long_body = max(avg_body * 1.1, 1e-6)
+    small_body = max(avg_body * 0.6, 1e-6)
+    matches = []
+    seen_names = set()
+
+    def add_match(name: str, bias: str, score: int, bars_ago: int, description: str):
+        if name in seen_names:
+            return
+        seen_names.add(name)
+        matches.append(
+            {
+                "name": name,
+                "bias": bias,
+                "score": score,
+                "bars_ago": bars_ago,
+                "description": description,
+            }
+        )
+
+    start_i = max(1, n - 12)
+    for i in range(n - 1, start_i - 1, -1):
+        c0 = candles[i]
+        c1 = candles[i - 1] if i - 1 >= 0 else None
+        c2 = candles[i - 2] if i - 2 >= 0 else None
+        c3 = candles[i - 3] if i - 3 >= 0 else None
+        c4 = candles[i - 4] if i - 4 >= 0 else None
+        bars_ago = n - 1 - i
+
+        if c1 is not None:
+            if (
+                bear(c1)
+                and bull(c0)
+                and c0["o"] <= c1["c"]
+                and c0["c"] >= c1["o"]
+                and body(c0) >= body(c1) * 0.9
+            ):
+                add_match("Bullish Engulfing", "bullish", 14, bars_ago, "Bull candle fully engulfs prior bear body.")
+            if (
+                bull(c1)
+                and bear(c0)
+                and c0["o"] >= c1["c"]
+                and c0["c"] <= c1["o"]
+                and body(c0) >= body(c1) * 0.9
+            ):
+                add_match("Bearish Engulfing", "bearish", -14, bars_ago, "Bear candle fully engulfs prior bull body.")
+
+            c1_mid = (c1["o"] + c1["c"]) / 2.0
+            if bear(c1) and body(c1) >= long_body and bull(c0) and c0["c"] > c1_mid and c0["c"] < c1["o"]:
+                add_match("Piercing Line", "bullish", 12, bars_ago, "Recovery candle closes above midpoint of prior bear candle.")
+            if bull(c1) and body(c1) >= long_body and bear(c0) and c0["c"] < c1_mid and c0["c"] > c1["o"]:
+                add_match("Dark Cloud Cover", "bearish", -12, bars_ago, "Selloff candle closes below midpoint of prior bull candle.")
+
+            if (
+                bear(c1)
+                and body(c1) >= long_body
+                and body(c0) <= small_body
+                and c0["o"] >= min(c1["o"], c1["c"])
+                and c0["c"] <= max(c1["o"], c1["c"])
+            ):
+                add_match("Bullish Harami", "bullish", 8, bars_ago, "Small inside candle after bearish expansion.")
+            if (
+                bull(c1)
+                and body(c1) >= long_body
+                and body(c0) <= small_body
+                and c0["o"] <= max(c1["o"], c1["c"])
+                and c0["c"] >= min(c1["o"], c1["c"])
+            ):
+                add_match("Bearish Harami", "bearish", -8, bars_ago, "Small inside candle after bullish expansion.")
+
+            low_tol = max(c0["c"], c1["c"], c0["o"], c1["o"]) * 0.0015
+            if abs(c0["l"] - c1["l"]) <= low_tol and bull(c0):
+                add_match("Tweezer Bottom", "bullish", 9, bars_ago, "Two-session low rejection at similar lows.")
+            if abs(c0["h"] - c1["h"]) <= low_tol and bear(c0):
+                add_match("Tweezer Top", "bearish", -9, bars_ago, "Two-session high rejection at similar highs.")
+
+        if c2 is not None and c1 is not None:
+            c2_mid = (c2["o"] + c2["c"]) / 2.0
+            if (
+                bear(c2)
+                and body(c2) >= long_body
+                and body(c1) <= small_body
+                and bull(c0)
+                and c0["c"] > c2_mid
+            ):
+                add_match("Morning Star", "bullish", 16, bars_ago, "Three-candle reversal: bear impulse, pause, bull reclaim.")
+            if (
+                bull(c2)
+                and body(c2) >= long_body
+                and body(c1) <= small_body
+                and bear(c0)
+                and c0["c"] < c2_mid
+            ):
+                add_match("Evening Star", "bearish", -16, bars_ago, "Three-candle reversal: bull impulse, pause, bear reclaim.")
+
+            if (
+                bear(c2)
+                and body(c1) <= small_body
+                and bull(c0)
+                and c0["c"] > c2["o"]
+            ):
+                add_match("Three Inside Up", "bullish", 11, bars_ago, "Bullish harami confirmation with upside break.")
+            if (
+                bull(c2)
+                and body(c1) <= small_body
+                and bear(c0)
+                and c0["c"] < c2["o"]
+            ):
+                add_match("Three Inside Down", "bearish", -11, bars_ago, "Bearish harami confirmation with downside break.")
+
+            if (
+                bear(c2)
+                and bull(c1)
+                and c1["o"] <= c2["c"]
+                and c1["c"] >= c2["o"]
+                and bull(c0)
+                and c0["c"] > c1["c"]
+            ):
+                add_match("Three Outside Up", "bullish", 13, bars_ago, "Engulfing reversal confirmed by follow-through.")
+            if (
+                bull(c2)
+                and bear(c1)
+                and c1["o"] >= c2["c"]
+                and c1["c"] <= c2["o"]
+                and bear(c0)
+                and c0["c"] < c1["c"]
+            ):
+                add_match("Three Outside Down", "bearish", -13, bars_ago, "Engulfing reversal confirmed by follow-through.")
+
+            if (
+                bull(c2)
+                and bull(c1)
+                and bull(c0)
+                and c2["c"] < c1["c"] < c0["c"]
+                and c1["o"] >= c2["o"]
+                and c0["o"] >= c1["o"]
+            ):
+                add_match("Three White Soldiers", "bullish", 18, bars_ago, "Three strong bullish closes with stair-step continuation.")
+            if (
+                bear(c2)
+                and bear(c1)
+                and bear(c0)
+                and c2["c"] > c1["c"] > c0["c"]
+                and c1["o"] <= c2["o"]
+                and c0["o"] <= c1["o"]
+            ):
+                add_match("Three Black Crows", "bearish", -18, bars_ago, "Three strong bearish closes with stair-step continuation.")
+
+        if c4 is not None and c3 is not None and c2 is not None and c1 is not None:
+            if (
+                bull(c4)
+                and body(c4) >= long_body
+                and bear(c3)
+                and bear(c2)
+                and bear(c1)
+                and c3["h"] <= c4["h"]
+                and c2["h"] <= c4["h"]
+                and c1["h"] <= c4["h"]
+                and c3["l"] >= c4["l"]
+                and c2["l"] >= c4["l"]
+                and c1["l"] >= c4["l"]
+                and bull(c0)
+                and c0["c"] > c4["h"]
+            ):
+                add_match("Rising Three Methods", "bullish", 20, bars_ago, "Bull trend pauses with contained pullback then breaks higher.")
+            if (
+                bear(c4)
+                and body(c4) >= long_body
+                and bull(c3)
+                and bull(c2)
+                and bull(c1)
+                and c3["h"] <= c4["h"]
+                and c2["h"] <= c4["h"]
+                and c1["h"] <= c4["h"]
+                and c3["l"] >= c4["l"]
+                and c2["l"] >= c4["l"]
+                and c1["l"] >= c4["l"]
+                and bear(c0)
+                and c0["c"] < c4["l"]
+            ):
+                add_match("Falling Three Methods", "bearish", -20, bars_ago, "Bear trend pauses with contained bounce then breaks lower.")
+
+    matches.sort(key=lambda p: (p["bars_ago"], -abs(p["score"])))
+    total_score = sum(p["score"] for p in matches)
+    total_score = max(-100, min(100, total_score))
+    bullish = sum(1 for p in matches if p["bias"] == "bullish")
+    bearish = sum(1 for p in matches if p["bias"] == "bearish")
+    if total_score > 4:
+        bias = "bullish"
+    elif total_score < -4:
+        bias = "bearish"
+    else:
+        bias = "neutral"
+    return {
+        "candlestick_score": total_score,
+        "bias": bias,
+        "matched_patterns": matches,
+        "bullish_patterns": bullish,
+        "bearish_patterns": bearish,
+        "supported_patterns": supported_patterns,
+    }
+
+
 def create_app(scanner: Scanner) -> Flask:
     app = Flask(__name__)
     app.config["SCANNER"] = scanner
@@ -102,9 +452,7 @@ def create_app(scanner: Scanner) -> Flask:
         filtered_scan_seconds = _filtered_scan_seconds(settings)
         us_scan_seconds = _us_market_scan_seconds(settings)
         ttl_seconds = _alert_ttl_seconds(settings)
-        strategy_profile = request.args.get("profile")
-        if strategy_profile not in {"balanced", "news_first", "momentum_first"}:
-            strategy_profile = config.SCALP_STRATEGY_DEFAULT
+        strategy_profile = _normalized_scalp_profile(settings.get("scalp_profile_current"))
         rows = scanner.rows(
             include_filtered=include_filtered,
             strategy_profile=strategy_profile,
@@ -129,6 +477,11 @@ def create_app(scanner: Scanner) -> Flask:
         settings["filtered_scan_seconds"] = _filtered_scan_seconds(settings)
         settings["ui_refresh_seconds"] = settings["filtered_scan_seconds"]
         settings["us_market_scan_seconds"] = _us_market_scan_seconds(settings)
+        settings["scalp_profile_current"] = _normalized_scalp_profile(
+            settings.get("scalp_profile_current")
+        )
+        settings["watchlist_preset"] = _normalized_watchlist_preset(settings.get("watchlist_preset"))
+        settings["shared_filters"] = _sanitize_shared_filters(settings.get("shared_filters"))
         if request.method == "POST":
             try:
                 payload = request.get_json(force=True) or {}
@@ -158,6 +511,16 @@ def create_app(scanner: Scanner) -> Flask:
                     10 * 60,
                     48 * 60 * 60,
                 )
+            if "scalp_profile_current" in payload:
+                payload["scalp_profile_current"] = _normalized_scalp_profile(
+                    payload.get("scalp_profile_current")
+                )
+            if "watchlist_preset" in payload:
+                payload["watchlist_preset"] = _normalized_watchlist_preset(
+                    payload.get("watchlist_preset")
+                )
+            if "shared_filters" in payload:
+                payload["shared_filters"] = _sanitize_shared_filters(payload.get("shared_filters"))
             settings.update(payload)
             _save_settings(settings)
             config.FILTERED_SCAN_SECONDS = _filtered_scan_seconds(settings)
@@ -170,6 +533,11 @@ def create_app(scanner: Scanner) -> Flask:
         settings["filtered_scan_seconds"] = _filtered_scan_seconds(settings)
         settings["ui_refresh_seconds"] = settings["filtered_scan_seconds"]
         settings["us_market_scan_seconds"] = _us_market_scan_seconds(settings)
+        settings["scalp_profile_current"] = _normalized_scalp_profile(
+            settings.get("scalp_profile_current")
+        )
+        settings["watchlist_preset"] = _normalized_watchlist_preset(settings.get("watchlist_preset"))
+        settings["shared_filters"] = _sanitize_shared_filters(settings.get("shared_filters"))
         return jsonify(settings)
 
     @app.route("/api/health")
@@ -287,81 +655,7 @@ self.addEventListener('notificationclick', function(event) {
             return ('missing ticker', 400)
 
         requested_interval = (request.args.get('interval') or '1m').strip().lower()
-        requested_interval = requested_interval if requested_interval in {'1m', '3m', '5m'} else '1m'
-        fallback_order = [requested_interval] + [i for i in ('1m', '3m', '5m') if i != requested_interval]
-
-        from urllib.parse import urlencode
-        from urllib.request import Request, urlopen
-
-        def _fetch_raw(interval: str, data_range: str) -> list[dict]:
-            params = urlencode({"interval": interval, "range": data_range})
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{params}"
-            req = Request(url, headers={"User-Agent": config.USER_AGENT})
-            with urlopen(req, timeout=8) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            result = (payload.get("chart", {}).get("result") or [])
-            if not result:
-                return []
-            quote = ((result[0].get("indicators") or {}).get("quote") or [])
-            if not quote:
-                return []
-            q0 = quote[0]
-            raw_open = q0.get("open") or []
-            raw_high = q0.get("high") or []
-            raw_low = q0.get("low") or []
-            raw_close = q0.get("close") or []
-            candles: list[dict] = []
-            count = min(len(raw_open), len(raw_high), len(raw_low), len(raw_close))
-            for i in range(count):
-                o = raw_open[i]
-                h = raw_high[i]
-                l = raw_low[i]
-                c = raw_close[i]
-                if o is None or h is None or l is None or c is None:
-                    continue
-                candles.append({"o": float(o), "h": float(h), "l": float(l), "c": float(c)})
-            return candles
-
-        def _aggregate_3m(one_minute: list[dict]) -> list[dict]:
-            if len(one_minute) < 3:
-                return []
-            blocks: list[dict] = []
-            for i in range(0, len(one_minute), 3):
-                group = one_minute[i:i + 3]
-                if len(group) < 3:
-                    continue
-                blocks.append(
-                    {
-                        "o": group[0]["o"],
-                        "h": max(x["h"] for x in group),
-                        "l": min(x["l"] for x in group),
-                        "c": group[-1]["c"],
-                    }
-                )
-            return blocks
-
-        candles = None
-        used_interval = None
-        candles_per_30m = {"1m": 30, "3m": 10, "5m": 6}
-        for interval in fallback_order:
-            try:
-                if interval == '1m':
-                    base = _fetch_raw('1m', '1d')
-                    candidate = base[-candles_per_30m["1m"]:]
-                elif interval == '3m':
-                    base = _fetch_raw('1m', '1d')
-                    candidate = _aggregate_3m(base)
-                    candidate = candidate[-candles_per_30m["3m"]:]
-                else:
-                    base = _fetch_raw('5m', '5d')
-                    candidate = base[-candles_per_30m["5m"]:]
-            except Exception:
-                continue
-            if len(candidate) < 2:
-                continue
-            candles = candidate
-            used_interval = interval
-            break
+        candles, used_interval = _get_chart_candles(ticker, requested_interval)
 
         if candles is not None and used_interval is not None:
             w = 360
@@ -425,5 +719,38 @@ self.addEventListener('notificationclick', function(event) {
         from flask import Response
 
         return Response(svg_bad, mimetype='image/svg+xml')
+
+    @app.route('/api/candlestick-patterns')
+    def api_candlestick_patterns():
+        ticker = (request.args.get('ticker') or '').upper()
+        if not ticker:
+            return jsonify({"error": "missing ticker"}), 400
+        requested_interval = (request.args.get('interval') or '1m').strip().lower()
+        candles, used_interval = _get_chart_candles(ticker, requested_interval)
+        if candles is None or used_interval is None:
+            return jsonify(
+                {
+                    "ticker": ticker,
+                    "requested_interval": requested_interval,
+                    "used_interval": None,
+                    "candles_analyzed": 0,
+                    "candlestick_score": 0,
+                    "bias": "neutral",
+                    "matched_patterns": [],
+                    "bullish_patterns": 0,
+                    "bearish_patterns": 0,
+                    "supported_patterns": [],
+                }
+            )
+        analysis = analyze_candlestick_patterns(candles)
+        return jsonify(
+            {
+                "ticker": ticker,
+                "requested_interval": requested_interval,
+                "used_interval": used_interval,
+                "candles_analyzed": len(candles),
+                **analysis,
+            }
+        )
 
     return app
