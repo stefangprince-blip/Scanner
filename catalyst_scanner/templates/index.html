@@ -45,6 +45,15 @@ header{
   white-space:nowrap;
   flex:0 0 auto;
 }
+.brand-row #f-force-scan{
+  padding:5px 12px;
+  font-size:11px;
+  font-weight:600;
+  letter-spacing:.06em;
+  border-radius:4px;
+  white-space:nowrap;
+  flex:0 0 auto;
+}
 .brand{font-family:var(--mono); font-weight:600; font-size:15px;
   letter-spacing:.14em; text-transform:uppercase; color:var(--bright)}
 .brand span{color:var(--hot)}
@@ -224,6 +233,11 @@ body.controls-collapsed .spotlight{
   font-size:10px;
   letter-spacing:.04em;
  }
+ .brand-row #f-force-scan{
+  padding:4px 8px;
+  font-size:10px;
+  letter-spacing:.04em;
+ }
  .mobile-chart-wrap{display:block}
 }
  
@@ -237,10 +251,26 @@ body.compact .meta{margin-top:4px}
 .show-sm{display:none}
 
 /* chart popup */
-.chart-popup{position:fixed; z-index:9999; background:var(--panel-2); border:1px solid var(--rule); padding:6px; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.6);}
-.chart-popup img{display:block; width:360px; height:170px}
+.chart-popup{
+  position:fixed;
+  z-index:9999;
+  background:var(--panel-2);
+  border:1px solid var(--rule);
+  padding:8px;
+  border-radius:8px;
+  box-shadow:0 6px 18px rgba(0,0,0,.6);
+  pointer-events:auto;
+  max-width:min(560px, calc(100vw - 16px));
+  max-height:calc(100vh - 16px);
+  overflow:auto;
+}
+.chart-popup img{
+  display:block;
+  width:min(540px, calc(100vw - 32px));
+  height:auto;
+}
 .chart-pattern-note{
-  width:360px;
+  width:min(540px, calc(100vw - 32px));
   margin-top:6px;
   border:1px solid rgba(255,255,255,.08);
   background:rgba(12,18,32,.75);
@@ -272,6 +302,7 @@ body.compact .meta{margin-top:4px}
 <header>
   <div class="brand-row">
     <div class="brand brand-toggle" id="f-toggle-controls-title" role="button" tabindex="0" aria-expanded="true" aria-controls="controls-root">Catalyst <span>Board</span></div>
+    <button id="f-force-scan" type="button">Force scan</button>
     <button id="f-collapse-controls" type="button" aria-expanded="true" aria-controls="controls-root">↑ Hide controls</button>
   </div>
   <div class="stat"><span class="pulse"></span><b id="s-count">0</b> live</div>
@@ -303,7 +334,6 @@ body.compact .meta{margin-top:4px}
     <label>US scan s <input type="number" id="f-us-scan-seconds" min="5" max="600" step="1"></label>
     <label>Window h <input type="number" id="f-window-hours" min="0.2" max="48" step="0.1"></label>
     <button id="f-apply-runtime" type="button">Apply speed/window</button>
-    <button id="f-force-scan" type="button">Force scan</button>
     <label>Sort <select id="f-sort">
       <option value="heat">Heat</option>
       <option value="score">Score</option>
@@ -1445,39 +1475,43 @@ function render(){
 function updateSessionBadge(rows){
   const badge = el('s-session-badge');
   if (!badge) return;
-  // Determine session from rows' market_state field (most recent row)
-  let state = null;
+  // Prefer server-calculated US session from rows() so label is consistent
+  // even when quote market_state is stale or absent.
+  let sessionType = null;
+  let marketState = null;
   for (const r of rows) {
-    if (r.market_state) { state = r.market_state; break; }
+    if (!sessionType && r.session) sessionType = String(r.session).toLowerCase();
+    if (!marketState && r.market_state) marketState = String(r.market_state).toUpperCase();
+    if (sessionType && marketState) break;
   }
-  // Also derive from local time as fallback
-  if (!state) {
+  // Fallback to local ET time when there are no rows yet.
+  if (!sessionType && !marketState) {
     const now = new Date();
     // Convert to ET
     const etStr = now.toLocaleString('en-US', {timeZone: 'America/New_York'});
     const et = new Date(etStr);
     const h = et.getHours(), m = et.getMinutes(), day = et.getDay();
     if (day === 0 || day === 6) {
-      state = 'CLOSED';
+      sessionType = 'closed';
     } else if (h < 4 || h >= 20) {
-      state = 'CLOSED';
+      sessionType = 'closed';
     } else if (h < 9 || (h === 9 && m < 30)) {
-      state = 'PRE';
+      sessionType = 'premarket';
     } else if (h < 16) {
-      state = 'REGULAR';
+      sessionType = 'regular';
     } else {
-      state = 'POST';
+      sessionType = 'after_hours';
     }
   }
   let label, cls;
-  if (state === 'PRE' || state === 'PREPRE') {
+  if (sessionType === 'premarket' || marketState === 'PRE' || marketState === 'PREPRE') {
     label = '⏰ Pre-Market'; cls = 'session-premarket';
-  } else if (state === 'REGULAR') {
-    label = '🟢 Market Open'; cls = 'session-regular';
-  } else if (state === 'POST' || state === 'POSTPOST') {
-    label = '🌙 After Hours'; cls = 'session-after-hours';
+  } else if (sessionType === 'regular' || marketState === 'REGULAR') {
+    label = '🟢 Regular Session'; cls = 'session-regular';
+  } else if (sessionType === 'after_hours' || marketState === 'POST' || marketState === 'POSTPOST') {
+    label = '🌙 Extended Hours'; cls = 'session-after-hours';
   } else {
-    label = '🔴 Market Closed'; cls = 'session-closed';
+    label = '🔴 Closed'; cls = 'session-closed';
   }
   badge.className = `stat ${cls}`;
   badge.textContent = label;
@@ -1550,6 +1584,40 @@ setInterval(() => {
 
 let chartPopup = null;
 let chartPopupRequestId = 0;
+let chartPopupHideTimer = null;
+
+function cancelHideChart(){
+  if (chartPopupHideTimer) {
+    clearTimeout(chartPopupHideTimer);
+    chartPopupHideTimer = null;
+  }
+}
+
+function scheduleHideChart(delayMs){
+  cancelHideChart();
+  chartPopupHideTimer = setTimeout(() => {
+    hideChart();
+  }, delayMs);
+}
+
+function positionChartPopup(anchor){
+  if (!chartPopup || !anchor) return;
+  const margin = 8;
+  const anchorRect = anchor.getBoundingClientRect();
+  const popupRect = chartPopup.getBoundingClientRect();
+  let left = anchorRect.right + 10;
+  if (left + popupRect.width > window.innerWidth - margin) {
+    left = anchorRect.left - popupRect.width - 10;
+  }
+  left = Math.max(margin, Math.min(left, window.innerWidth - popupRect.width - margin));
+  let top = anchorRect.top - 6;
+  if (top + popupRect.height > window.innerHeight - margin) {
+    top = window.innerHeight - popupRect.height - margin;
+  }
+  if (top < margin) top = margin;
+  chartPopup.style.left = `${Math.round(left)}px`;
+  chartPopup.style.top = `${Math.round(top)}px`;
+}
 
 function renderPatternNote(payload){
   if (!payload) return '<div class="chart-pattern-note">Pattern data unavailable.</div>';
@@ -1581,9 +1649,12 @@ function renderPatternNote(payload){
 async function showChartForTicker(ticker, anchor){
   if (isMobileViewport()) return;
   hideChart();
+  cancelHideChart();
   const requestId = ++chartPopupRequestId;
   chartPopup = document.createElement('div');
   chartPopup.className = 'chart-popup';
+  chartPopup.addEventListener('mouseenter', () => cancelHideChart());
+  chartPopup.addEventListener('mouseleave', () => scheduleHideChart(120));
   const img = document.createElement('img');
   img.src = chartUrlForTicker(ticker);
   chartPopup.appendChild(img);
@@ -1592,24 +1663,25 @@ async function showChartForTicker(ticker, anchor){
   note.textContent = 'Analyzing candlestick patterns...';
   chartPopup.appendChild(note);
   document.body.appendChild(chartPopup);
-  // position near anchor element but keep on-screen
-  const rect = anchor.getBoundingClientRect();
-  const left = Math.min(window.innerWidth - 372, rect.right + 8);
-  const top = Math.max(8, rect.top - 10);
-  chartPopup.style.left = left + 'px';
-  chartPopup.style.top = top + 'px';
+  positionChartPopup(anchor);
   try {
     const resp = await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${encodeURIComponent(chartTimeframe)}`, {cache:'no-store'});
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const payload = await resp.json();
     if (!chartPopup || requestId !== chartPopupRequestId) return;
     note.innerHTML = renderPatternNote(payload);
+    positionChartPopup(anchor);
   } catch (e) {
     if (!chartPopup || requestId !== chartPopupRequestId) return;
     note.textContent = 'Candlestick analysis unavailable.';
+    positionChartPopup(anchor);
   }
 }
-function hideChart(){ if(chartPopup){ chartPopup.remove(); chartPopup = null; } chartPopupRequestId++; }
+function hideChart(){
+  cancelHideChart();
+  if(chartPopup){ chartPopup.remove(); chartPopup = null; }
+  chartPopupRequestId++;
+}
 // Event delegation: show chart on hover for ticker links
 el('board').addEventListener('mouseover', (ev)=>{
   if (isMobileViewport()) return;
@@ -1623,13 +1695,9 @@ el('board').addEventListener('mouseout', (ev)=>{
   if (isMobileViewport()) return;
   const a = ev.target.closest ? ev.target.closest('.tick') : null;
   if (a){
-    // small timeout to allow moving into the popup if desired
-    setTimeout(()=>{
-      if (!chartPopup) return;
-      // if mouse is over the popup, keep it
-      // we keep the popup non-interactive (pointer-events default) so simply hide
-      hideChart();
-    }, 200);
+    const related = ev.relatedTarget;
+    if (chartPopup && related && chartPopup.contains(related)) return;
+    scheduleHideChart(140);
   }
 });
 
