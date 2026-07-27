@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
@@ -12,7 +13,8 @@ log = logging.getLogger("scanner.app")
 
 
 def create_app(scanner: Scanner) -> Flask:
-    app = Flask(__name__)
+    template_root = Path(__file__).resolve().parent.parent
+    app = Flask(__name__, template_folder=str(template_root))
     app.config["SCANNER"] = scanner
 
     @app.route("/")
