@@ -3,6 +3,7 @@
 Avoids a feedparser dependency and keeps behaviour predictable: it returns
 plain dicts with normalised keys no matter which dialect the wire uses.
 """
+
 from __future__ import annotations
 
 import re
@@ -88,8 +89,11 @@ def parse_date(raw: str) -> float:
     cleaned = raw.replace("Z", "+00:00")
     for fmt in (None, "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            dt = (datetime.fromisoformat(cleaned) if fmt is None
-                  else datetime.strptime(cleaned, fmt))
+            dt = (
+                datetime.fromisoformat(cleaned)
+                if fmt is None
+                else datetime.strptime(cleaned, fmt)
+            )
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.timestamp()
@@ -142,15 +146,18 @@ def parse(xml_bytes: bytes) -> list[dict]:
         title = strip_html(_text(_find(entry, "title")))
         if not title:
             continue
-        summary = strip_html(
-            _text(_find(entry, "description", "summary", "content"))
-        )
+        summary = strip_html(_text(_find(entry, "description", "summary", "content")))
         date_el = _find(entry, "pubdate", "published", "updated", "date")
-        out.append({
-            "title": title,
-            "link": _entry_link(entry),
-            "summary": summary[:1200],
-            "published": parse_date(_text(date_el)),
-            "raw_id": _text(_find(entry, "guid", "id")),
-        })
+        raw_date = _text(date_el)
+        out.append(
+            {
+                "title": title,
+                "link": _entry_link(entry),
+                "summary": summary[:1200],
+                "published": parse_date(_text(date_el)),
+                "publication_time_available": bool(raw_date),
+                "raw_id": _text(_find(entry, "guid", "id")),
+                "source": strip_html(_text(_find(entry, "source", "author"))),
+            }
+        )
     return out

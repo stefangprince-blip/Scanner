@@ -65,6 +65,35 @@ def main():
     scanner.start()
 
     app = create_app(scanner)
+
+    # Create a Socket.IO server and register it with the notifications helper.
+    # This enables the scanner to push new-alert events immediately to connected browsers.
+    try:
+        from flask_socketio import SocketIO
+    except ImportError:
+        SocketIO = None
+        logging.warning(
+            "flask-socketio is not installed; realtime browser events are disabled"
+        )
+
+    if SocketIO is not None:
+        from catalyst_scanner import notifications
+
+        socketio = SocketIO(app, cors_allowed_origins="*")
+        notifications.register_socketio(socketio)
+        print(f"\n  Catalyst Board  ->  http://{args.host}:{args.port}  (websocket enabled)\n")
+        try:
+            # Use socketio.run so websocket transport is active
+            socketio.run(
+                app,
+                host=args.host,
+                port=args.port,
+                allow_unsafe_werkzeug=True,
+            )
+        finally:
+            scanner.stop()
+        return
+
     print(f"\n  Catalyst Board  ->  http://{args.host}:{args.port}\n")
     try:
         app.run(

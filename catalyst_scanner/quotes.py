@@ -2,12 +2,28 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
+import requests
 
 from . import config
 
 log = logging.getLogger("scanner.quotes")
+
+
+def _epoch_seconds(value) -> float | None:
+    if value in (None, "", "-"):
+        return None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    if ts > 10_000_000_000:
+        ts /= 1000.0
+    return ts
 
 
 class QuoteProvider:
@@ -24,6 +40,10 @@ class QuoteProvider:
     def quotes(self, tickers: list[str]) -> dict[str, dict]:
         """Batch fetch. Override when the API supports multi-symbol calls."""
         return {t: self.quote(t) for t in tickers}
+
+    def quotes_minimal(self, tickers: list[str]) -> dict[str, dict]:
+        """Lean batch fetch for high-throughput scans (only required fields)."""
+        return self.quotes(tickers)
 
 
 class NullProvider(QuoteProvider):
@@ -43,18 +63,57 @@ class YFinanceProvider(QuoteProvider):
         import yfinance  # imported lazily so the app runs without it
 
         self._yf = yfinance
+        self._http = requests.Session()
         self._fund_cache: dict[str, dict] = {}
         self._fund_lock = threading.Lock()
 
     def fundamentals(self, ticker: str) -> dict:
+        key = str(ticker or "").upper()
+        if not key:
+            return {}
         with self._fund_lock:
-            cached = self._fund_cache.get(ticker)
-        if cached and time.time() - cached.get("_at", 0) < 3600:
-            return cached
+            cached = self._fund_cache.get(key)
+        if cached and time.time() - cached.get("_at", 0) < config.FUNDAMENTALS_REFRESH_SECONDS:
+            if (
+                cached.get("market_cap") is not None
+                and cached.get("float_shares") is not None
+            ):
+                return cached
+            # cache is incomplete; force a refresh attempt
 
         data: dict = {"_at": time.time()}
+        if cached:
+            for k in (
+                "name",
+                "exchange",
+                "market_cap",
+                "float_shares",
+                "shares_out",
+                "avg_volume",
+                "sector",
+            ):
+                if cached.get(k) is not None:
+                    data[k] = cached.get(k)
         try:
-            tk = self._yf.Ticker(ticker)
+            tk = self._yf.Ticker(key)
+            try:
+                fi = tk.fast_info
+            except Exception:
+                fi = {}
+            data.update(
+                {
+                    "exchange": data.get("exchange")
+                    or fi.get("exchange"),
+                    "market_cap": fi.get("marketCap")
+                    or fi.get("market_cap")
+                    or data.get("market_cap"),
+                    "avg_volume": fi.get("tenDayAverageVolume")
+                    or fi.get("ten_day_average_volume")
+                    or fi.get("threeMonthAverageVolume")
+                    or fi.get("three_month_average_volume")
+                    or data.get("avg_volume"),
+                }
+            )
             info: dict = {}
             try:
                 info = tk.get_info() or {}
@@ -63,72 +122,379 @@ class YFinanceProvider(QuoteProvider):
             data.update(
                 {
                     "name": info.get("shortName") or info.get("longName"),
-                    "exchange": info.get("exchange"),
-                    "market_cap": info.get("marketCap"),
-                    "float_shares": info.get("floatShares"),
-                    "shares_out": info.get("sharesOutstanding"),
+                    "exchange": info.get("exchange") or data.get("exchange"),
+                    "market_cap": info.get("marketCap") or data.get("market_cap"),
+                    "float_shares": info.get("floatShares")
+                    or info.get("sharesOutstanding")
+                    or data.get("float_shares"),
+                    "shares_out": info.get("sharesOutstanding") or data.get("shares_out"),
                     "avg_volume": info.get("averageVolume10days")
                     or info.get("averageVolume"),
                     "sector": info.get("sector"),
                 }
             )
         except Exception as exc:
-            log.debug("fundamentals failed for %s: %s", ticker, exc)
+            log.debug("fundamentals failed for %s: %s", key, exc)
+
+        if (
+            data.get("market_cap") is None
+            or data.get("float_shares") is None
+            or data.get("exchange") is None
+        ):
+            finviz_data = self._finviz_fundamentals(key)
+            for k, v in finviz_data.items():
+                if v is not None and data.get(k) is None:
+                    data[k] = v
 
         with self._fund_lock:
-            self._fund_cache[ticker] = data
+            self._fund_cache[key] = data
         return data
 
-    def quote(self, ticker: str) -> dict:
+    @staticmethod
+    def _parse_scaled_number(text: str | None) -> float | None:
+        if not text:
+            return None
+        raw = str(text).strip().replace(",", "")
+        if raw in {"-", "N/A", "NA"}:
+            return None
+        mult = 1.0
+        if raw.endswith("B"):
+            mult = 1_000_000_000.0
+            raw = raw[:-1]
+        elif raw.endswith("M"):
+            mult = 1_000_000.0
+            raw = raw[:-1]
+        elif raw.endswith("K"):
+            mult = 1_000.0
+            raw = raw[:-1]
         try:
-            fi = self._yf.Ticker(ticker).fast_info
+            return float(raw) * mult
+        except ValueError:
+            return None
+
+    def _finviz_fundamentals(self, ticker: str) -> dict:
+        def extract(label: str, html: str) -> str | None:
+            pattern = re.compile(
+                r"snapshot-td-label\">\s*"
+                + re.escape(label)
+                + r"\s*</div>.*?snapshot-td-content\"><b>([^<]+)</b>",
+                re.IGNORECASE | re.DOTALL,
+            )
+            m = pattern.search(html)
+            if not m:
+                return None
+            return str(m.group(1) or "").strip()
+
+        try:
+            resp = self._http.get(
+                "https://finviz.com/quote.ashx",
+                params={"t": ticker, "p": "d"},
+                headers={"User-Agent": config.USER_AGENT},
+                timeout=8,
+            )
+            if resp.status_code != 200 or not resp.text:
+                return {}
+            html = resp.text
+            market_cap = extract("Market Cap", html)
+            shs_float = extract("Shs Float", html)
+            shs_out = extract("Shs Outstand", html)
+            out = {
+                "market_cap": self._parse_scaled_number(market_cap),
+                "float_shares": self._parse_scaled_number(shs_float)
+                or self._parse_scaled_number(shs_out),
+                "shares_out": self._parse_scaled_number(shs_out),
+                "exchange": None,
+            }
+            return out
+        except Exception:
+            return {}
+
+    def quote(self, ticker: str) -> dict:
+        key = str(ticker or "").upper()
+        if not key:
+            return {}
+        try:
+            resp = self._http.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{key}",
+                params={"interval": "1m", "range": "1d", "includePrePost": "true"},
+                headers={"User-Agent": config.USER_AGENT},
+                timeout=6,
+            )
+            if resp.status_code == 200:
+                payload = resp.json() if resp.content else {}
+                result = (payload.get("chart", {}) or {}).get("result") or []
+                if result:
+                    r0 = result[0]
+                    meta = r0.get("meta") or {}
+                    q0 = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
+                    vols = q0.get("volume") or []
+                    closes = q0.get("close") or []
+
+                    # Determine which trading period we're in from Yahoo's data
+                    trading_periods = meta.get("tradingPeriods") or {}
+                    current_tp = meta.get("currentTradingPeriod") or {}
+                    market_state = meta.get("marketState") or "REGULAR"  # PRE, REGULAR, POST, POSTPOST, CLOSED
+
+                    vol = None
+                    if vols:
+                        for item in reversed(vols):
+                            if item is not None:
+                                vol = int(item)
+                                break
+                    # NOTE: do NOT return per-minute bar avg as avg_volume —
+                    # it's a per-minute figure (e.g. 5,000 shares/min) not
+                    # daily avg volume (e.g. 1,000,000/day). Fundamentals
+                    # provide the correct daily avg_volume via tenDayAverageVolume.
+
+                    # Compute 3-min and 10-min change percentages from 1-min close bars.
+                    # Each position in `closes` represents one 1-minute bar; None means
+                    # no trade that minute (sparse data is normal in pre/post market).
+                    change_pct_3m = None
+                    change_pct_10m = None
+                    if closes:
+                        valid_closes = [(i, float(c)) for i, c in enumerate(closes) if c is not None]
+                        if len(valid_closes) >= 2:
+                            last_idx, last_close = valid_closes[-1]
+                            prev_closes = valid_closes[:-1]
+
+                            def _ref_at(n_bars_back: int):
+                                """Return the close at or just before `last_idx - n_bars_back`.
+
+                                Falls back to the oldest available bar when there aren't
+                                enough bars yet (session just opened or sparse pre-market).
+                                Returns None only when there is literally no previous bar.
+                                """
+                                target = last_idx - n_bars_back
+                                for idx, c in reversed(prev_closes):
+                                    if idx <= target:
+                                        return c
+                                # Not enough history — use the earliest bar we have so
+                                # the user sees a real (wider-window) value instead of '—'.
+                                if prev_closes:
+                                    return prev_closes[0][1]
+                                return None
+
+                            ref3 = _ref_at(3)
+                            ref10 = _ref_at(10)
+                            if ref3 is not None and ref3 != 0:
+                                change_pct_3m = (last_close - ref3) / abs(ref3) * 100.0
+                            if ref10 is not None and ref10 != 0:
+                                change_pct_10m = (last_close - ref10) / abs(ref10) * 100.0
+
+                    # Pick the right price based on market state
+                    reg_price = meta.get("regularMarketPrice")
+                    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+
+                    if market_state in ("PRE", "PREPRE"):
+                        # Pre-market: use preMarketPrice if available
+                        last = meta.get("preMarketPrice") or reg_price
+                        if last is not None and prev:
+                            try:
+                                chg = (float(last) - float(prev)) / float(prev) * 100.0
+                            except Exception:
+                                chg = None
+                        else:
+                            chg = None
+                        # Pre-market session volume from bars (regularMarketVolume is 0 until open)
+                        session_vol = vol
+                    elif market_state in ("POST", "POSTPOST"):
+                        # After-hours: use postMarketPrice if available
+                        last = meta.get("postMarketPrice") or reg_price
+                        if last is not None and reg_price:
+                            try:
+                                chg = (float(last) - float(reg_price)) / float(reg_price) * 100.0
+                            except Exception:
+                                chg = None
+                        else:
+                            chg = None
+                        session_vol = meta.get("regularMarketVolume") or vol
+                    else:
+                        # Regular session
+                        last = reg_price
+                        chg = None
+                        if last is not None and prev:
+                            try:
+                                chg = (float(last) - float(prev)) / float(prev) * 100.0
+                            except Exception:
+                                chg = None
+                        session_vol = meta.get("regularMarketVolume") or vol
+
+                    regular_ts = _epoch_seconds(meta.get("regularMarketTime"))
+                    pre_ts = _epoch_seconds(meta.get("preMarketTime"))
+                    post_ts = _epoch_seconds(meta.get("postMarketTime"))
+                    bar_ts = None
+                    bar_times = r0.get("timestamp") or []
+                    if bar_times:
+                        for item in reversed(bar_times):
+                            parsed = _epoch_seconds(item)
+                            if parsed is not None:
+                                bar_ts = parsed
+                                break
+                    if market_state in ("PRE", "PREPRE"):
+                        last_trade_ts = pre_ts or regular_ts or bar_ts
+                    elif market_state in ("POST", "POSTPOST"):
+                        last_trade_ts = post_ts or regular_ts or bar_ts
+                    elif market_state in ("REGULAR", "OPEN"):
+                        last_trade_ts = regular_ts or bar_ts
+                    else:
+                        last_trade_ts = regular_ts or post_ts or pre_ts or bar_ts
+
+                    return {
+                        "last": float(last) if last is not None else None,
+                        "prev_close": float(prev) if prev is not None else None,
+                        "regular_session_close": (
+                            float(reg_price)
+                            if market_state in ("POST", "POSTPOST") and reg_price is not None
+                            else None
+                        ),
+                        "change_pct": round(chg, 2) if chg is not None else None,
+                        "volume": int(session_vol) if session_vol is not None else vol,
+                        "change_pct_3m": round(change_pct_3m, 2) if change_pct_3m is not None else None,
+                        "change_pct_10m": round(change_pct_10m, 2) if change_pct_10m is not None else None,
+                        "exchange": meta.get("exchangeName") or meta.get("fullExchangeName"),
+                        "market_state": market_state,
+                        "last_trade_ts": last_trade_ts,
+                    }
+        except Exception:
+            pass
+        try:
+            fi = self._yf.Ticker(key).fast_info
             last = fi.get("lastPrice") or fi.get("last_price")
             prev = fi.get("previousClose") or fi.get("previous_close")
             vol = fi.get("lastVolume") or fi.get("last_volume")
+            avg_vol = fi.get("tenDayAverageVolume") or fi.get("ten_day_average_volume")
             chg = None
             if last and prev:
                 chg = (last - prev) / prev * 100.0
-            return {"last": last, "change_pct": chg, "volume": vol, "prev_close": prev}
-        except Exception as exc:
-            log.debug("quote failed for %s: %s", ticker, exc)
+            return {
+                "last": last,
+                "change_pct": chg,
+                "volume": vol,
+                "avg_volume": avg_vol,
+                "prev_close": prev,
+                "market_state": "REGULAR",
+                "last_trade_ts": _epoch_seconds(fi.get("lastTradeDate") or fi.get("regularMarketTime")),
+            }
+        except Exception:
             return {}
+
+    def quotes_minimal(self, tickers: list[str]) -> dict[str, dict]:
+        if not tickers:
+            return {}
+        out: dict[str, dict] = {}
+        symbols = [str(t or "").upper().strip() for t in tickers]
+        symbols = [s for s in symbols if s]
+        for i in range(0, len(symbols), 100):
+            chunk = symbols[i : i + 100]
+            try:
+                resp = self._http.get(
+                    "https://query1.finance.yahoo.com/v7/finance/quote",
+                    params={"symbols": ",".join(chunk)},
+                    headers={"User-Agent": config.USER_AGENT},
+                    timeout=6,
+                )
+                if resp.status_code != 200:
+                    for sym in chunk:
+                        out.setdefault(sym, {})
+                    continue
+                payload = resp.json() if resp.content else {}
+                rows = ((payload.get("quoteResponse") or {}).get("result") or [])
+                by_symbol = {
+                    str(r.get("symbol") or "").upper(): r
+                    for r in rows
+                    if isinstance(r, dict)
+                }
+                for sym in chunk:
+                    row = by_symbol.get(sym)
+                    if not row:
+                        out.setdefault(sym, {})
+                        continue
+                    market_state = str(row.get("marketState") or "REGULAR").upper()
+                    reg_price = _num(row.get("regularMarketPrice"))
+                    prev = _num(row.get("regularMarketPreviousClose") or row.get("previousClose"))
+                    pre_price = _num(row.get("preMarketPrice"))
+                    post_price = _num(row.get("postMarketPrice"))
+
+                    if market_state in {"PRE", "PREPRE"}:
+                        last = pre_price if pre_price is not None else reg_price
+                        pre_chg = row.get("preMarketChangePercent")
+                        if pre_chg is not None:
+                            chg = float(pre_chg)
+                        elif last is not None and prev not in (None, 0):
+                            chg = ((last - prev) / prev) * 100.0
+                        else:
+                            chg = None
+                        volume = _num(row.get("regularMarketVolume"))
+                        last_trade_ts = _epoch_seconds(
+                            row.get("preMarketTime")
+                            or row.get("regularMarketTime")
+                            or row.get("postMarketTime")
+                        )
+                        previous_extended_close = (
+                            post_price
+                            if _epoch_seconds(row.get("postMarketTime"))
+                            and _epoch_seconds(row.get("preMarketTime"))
+                            and _epoch_seconds(row.get("postMarketTime"))
+                            < _epoch_seconds(row.get("preMarketTime"))
+                            else None
+                        )
+                        regular_session_close = None
+                    elif market_state in {"POST", "POSTPOST"}:
+                        last = post_price if post_price is not None else reg_price
+                        post_chg = row.get("postMarketChangePercent")
+                        if post_chg is not None:
+                            chg = float(post_chg)
+                        elif last is not None and prev not in (None, 0):
+                            chg = ((last - prev) / prev) * 100.0
+                        else:
+                            chg = None
+                        volume = _num(row.get("regularMarketVolume"))
+                        last_trade_ts = _epoch_seconds(
+                            row.get("postMarketTime")
+                            or row.get("regularMarketTime")
+                            or row.get("preMarketTime")
+                        )
+                        previous_extended_close = None
+                        regular_session_close = reg_price
+                    else:
+                        last = reg_price
+                        if last is not None and prev not in (None, 0):
+                            chg = ((last - prev) / prev) * 100.0
+                        else:
+                            chg = None
+                        volume = _num(row.get("regularMarketVolume"))
+                        last_trade_ts = _epoch_seconds(row.get("regularMarketTime"))
+                        previous_extended_close = None
+                        regular_session_close = None
+
+                    out[sym] = {
+                        "last": last,
+                        "prev_close": prev,
+                        "previous_extended_close": previous_extended_close,
+                        "regular_session_close": regular_session_close,
+                        "change_pct": round(chg, 2) if isinstance(chg, (float, int)) else None,
+                        "volume": volume,
+                        "avg_volume": _num(
+                            row.get("averageDailyVolume3Month")
+                            or row.get("averageDailyVolume10Day")
+                        ),
+                        "exchange": row.get("fullExchangeName") or row.get("exchange"),
+                        "market_state": market_state,
+                        "last_trade_ts": last_trade_ts,
+                    }
+            except Exception as exc:
+                log.debug("yfinance minimal quote batch failed: %s", exc)
+                for sym in chunk:
+                    out.setdefault(sym, {})
+        return out
 
     def quotes(self, tickers: list[str]) -> dict[str, dict]:
         if not tickers:
             return {}
         out: dict[str, dict] = {}
-        try:
-            df = self._yf.download(
-                tickers=" ".join(tickers),
-                period="2d",
-                interval="1d",
-                progress=False,
-                group_by="ticker",
-                threads=True,
-                auto_adjust=False,
-            )
-            for sym in tickers:
-                try:
-                    sub = df[sym] if len(tickers) > 1 else df
-                    closes = sub["Close"].dropna()
-                    vols = sub["Volume"].dropna()
-                    if len(closes) >= 2:
-                        last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
-                        out[sym] = {
-                            "last": last,
-                            "prev_close": prev,
-                            "change_pct": (
-                                (last - prev) / prev * 100.0 if prev else None
-                            ),
-                            "volume": int(vols.iloc[-1]) if len(vols) else None,
-                        }
-                except Exception:
-                    continue
-        except Exception as exc:
-            log.debug("batch quote failed: %s", exc)
         for sym in tickers:
-            if sym not in out:
-                out[sym] = self.quote(sym)
+            key = str(sym or "").upper()
+            out[key] = self.quote(key)
         return out
 
 
@@ -165,7 +531,7 @@ class WebullProvider(QuoteProvider):
     def fundamentals(self, ticker: str) -> dict:
         with self._lock:
             cached = self._fund_cache.get(ticker)
-        if cached and time.time() - cached.get("_at", 0) < 3600:
+        if cached and time.time() - cached.get("_at", 0) < config.FUNDAMENTALS_REFRESH_SECONDS:
             return cached
         data = {"_at": time.time()}
         try:
@@ -225,6 +591,12 @@ class WebullProvider(QuoteProvider):
                             )
                         ),
                         "volume": _num(row.get("volume")),
+                        "last_trade_ts": _epoch_seconds(
+                            row.get("tradeTime")
+                            or row.get("tradeTimestamp")
+                            or row.get("timestamp")
+                            or row.get("time")
+                        ),
                     }
             except Exception as exc:
                 log.debug("webull snapshot failed: %s", exc)

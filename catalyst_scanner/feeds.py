@@ -15,11 +15,14 @@ log = logging.getLogger("scanner.feeds")
 
 class Feed:
     def __init__(self, spec: dict):
+        self.spec = spec
         self.name = spec["name"]
         self.url = spec["url"]
         self.kind = spec.get("kind", "rss")
         self.weight = float(spec.get("weight", 1.0))
         self.interval = float(spec.get("poll_seconds", config.FEED_POLL_SECONDS))
+        self.min_social = spec.get('min_social')
+        self.max_entries = int(spec.get("max_entries", config.MAX_FEED_ITEMS_PER_FETCH) or config.MAX_FEED_ITEMS_PER_FETCH)
         self.etag: str | None = None
         self.modified: str | None = None
         self.backoff = 0.0
@@ -49,6 +52,7 @@ class Feed:
             headers["If-Modified-Since"] = self.modified
 
         try:
+            # For JSON-based social endpoints we'll override parsing below
             resp = session.get(self.url, headers=headers, timeout=12)
         except requests.RequestException as exc:
             self.error_count += 1
@@ -79,15 +83,101 @@ class Feed:
         self.error_count = 0
         self.last_ok = time.time()
 
+        # Handle JSON social feeds (reddit/stocktwits) specially
+        if self.kind == 'reddit':
+            try:
+                j = resp.json()
+                entries = []
+                for item in (j.get('data', {}).get('children', []) or [])[:200]:
+                    d = item.get('data', {})
+                    entries.append(
+                        {
+                            'title': d.get('title') or d.get('link_title') or '',
+                            'summary': (d.get('selftext') or '')[:800],
+                            'link': 'https://www.reddit.com' + (d.get('permalink') or ''),
+                            'published': float(d.get('created_utc') or time.time()),
+                            'raw_id': d.get('id'),
+                            'social_score': int(d.get('score') or 0),
+                        }
+                    )
+                self.last_status = f"200 · {len(entries)} entries"
+                # apply per-feed min_social if provided
+                if self.min_social is not None:
+                    entries = [e for e in entries if (e.get('social_score') or 0) >= int(self.min_social)]
+                return self._trim_entries(entries)
+            except Exception:
+                self.last_status = 'error: reddit-parse'
+                return []
+
+        if self.kind == 'stocktwits':
+            try:
+                j = resp.json()
+                entries = []
+                for m in j.get('messages', [])[:200]:
+                    # StockTwits messages include 'body', 'created_at', 'id', and 'symbols'
+                    body = m.get('body') or ''
+                    symbols = [s.get('symbol') for s in m.get('symbols', []) if s.get('symbol')]
+                    created = m.get('created_at')
+                    # created_at is ISO8601; try to parse to epoch
+                    ts = time.time()
+                    try:
+                        from email.utils import parsedate_to_datetime
+
+                        dt = parsedate_to_datetime(created)
+                        ts = dt.timestamp()
+                    except Exception:
+                        try:
+                            # fallback: parse common format
+                            ts = time.mktime(time.strptime(created, '%Y-%m-%dT%H:%M:%SZ'))
+                        except Exception:
+                            ts = time.time()
+                    social_score = 0
+                    # likes/replies may be nested; try to extract a heuristic
+                    try:
+                        social_score = int(m.get('likes', {}).get('count', 0) or 0)
+                    except Exception:
+                        social_score = 0
+                    link = m.get('id') and f"https://stocktwits.com/message/{m.get('id')}" or ''
+                    title = (', '.join(symbols) + ': ' + (body[:120] or '')).strip()
+                    entries.append(
+                        {
+                            'title': title,
+                            'summary': body[:800],
+                            'link': link,
+                            'published': float(ts),
+                            'raw_id': m.get('id'),
+                            'social_score': social_score,
+                        }
+                    )
+                self.last_status = f"200 · {len(entries)} entries"
+                if self.min_social is not None:
+                    entries = [e for e in entries if (e.get('social_score') or 0) >= int(self.min_social)]
+                return self._trim_entries(entries)
+            except Exception:
+                self.last_status = 'error: stocktwits-parse'
+                return []
+
+        # Default: parse as RSS/Atom
         entries = rssparse.parse(resp.content)
         self.last_status = f"200 · {len(entries)} entries"
-        return entries
+        return self._trim_entries(entries)
 
     def _grow_backoff(self) -> None:
         self.backoff = min(
             config.FEED_BACKOFF_MAX,
             max(config.FEED_BACKOFF_START, self.backoff * 2),
         )
+
+    def _trim_entries(self, entries: list[dict]) -> list[dict]:
+        if not entries:
+            return []
+        try:
+            entries = sorted(entries, key=lambda e: float(e.get("published", 0) or 0), reverse=True)
+        except Exception:
+            pass
+        if self.max_entries and self.max_entries > 0:
+            entries = entries[: self.max_entries]
+        return entries
 
     def new_entries(self, entries: list[dict]) -> list[dict]:
         """Filter out entries this feed has already handed us."""
@@ -106,12 +196,29 @@ class Feed:
         alerts: list[dict] = []
         cutoff = time.time() - config.ALERT_TTL_SECONDS
         for e in entries:
-            # On startup, seed the board with the last 4 hours but skip
-            # anything older so we don't backfill yesterday's news.
-            if e["published"] < cutoff:
-                continue
+            # Only consider items that are current enough for day-trading.
+            # Keep it very tight: same calendar day and within the recent age window.
+            try:
+                now_ts = time.time()
+                pub_ts = float(e.get("published", 0) or 0)
+                age_hours = max(0.0, (now_ts - pub_ts) / 3600.0)
+                if age_hours > config.MAX_NEWS_AGE_HOURS:
+                    continue
+                # Also require the item to be from the same local day to avoid older-news clutter.
+                now_tm = time.localtime(now_ts)
+                pub_tm = time.localtime(pub_ts)
+                if not (now_tm.tm_year == pub_tm.tm_year and now_tm.tm_mon == pub_tm.tm_mon and now_tm.tm_mday == pub_tm.tm_mday):
+                    continue
+            except Exception:
+                if e.get("published", 0) < cutoff:
+                    continue
 
             title, summary = e["title"], e.get("summary", "")
+            # Social feeds: skip low-score posts
+            if self.kind in ('reddit', 'stocktwits'):
+                if (e.get('social_score') or 0) < config.SOCIAL_MIN_SCORE:
+                    continue
+
             if self.kind == "edgar":
                 syms = tickers.from_edgar(title, e.get("link", ""), summary)
             else:
@@ -153,6 +260,7 @@ class FeedManager:
     def poll_due(self) -> list[dict]:
         now = time.time()
         alerts: list[dict] = []
+        seen_keys: set[str] = set()  # dedupe across feeds by ticker+headline+url
         for feed in self.feeds:
             if not feed.due(now):
                 continue
@@ -161,7 +269,17 @@ class FeedManager:
             if entries:
                 fresh = feed.new_entries(entries)
                 feed.entries_seen += len(fresh)
-                alerts.extend(feed.to_alerts(fresh, self._first_run))
+                new_alerts = feed.to_alerts(fresh, self._first_run)
+                for a in new_alerts:
+                    # canonical key: ticker|normalized headline|url
+                    ticker = (a.get('ticker') or '').strip().upper()
+                    headline = (a.get('headline') or '').strip().lower()
+                    url = a.get('url','') or ''
+                    key = f"{ticker}|{headline}|{url}"
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    alerts.append(a)
         self._first_run = False
         return alerts
 
@@ -188,11 +306,11 @@ class FeedManager:
             syms: list[str] = []
             for e in entries[:25]:
                 if feed.kind == "edgar":
-                    syms += tickers.from_edgar(e["title"], e.get("link", ""),
-                                               e.get("summary", ""))
+                    syms += tickers.from_edgar(
+                        e["title"], e.get("link", ""), e.get("summary", "")
+                    )
                 else:
                     syms += tickers.extract(f"{e['title']} {e.get('summary','')}")
             uniq = sorted(set(syms))
             preview = ", ".join(uniq[:8]) or "—"
             print(f"{feed.name:<18} {feed.last_status:<26} {preview}")
-

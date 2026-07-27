@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>{{ ticker }} Live Chart</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%23171D28%22/><path d=%22M6 22l6-7 5 3 9-10%22 fill=%22none%22 stroke=%22%23D9A441%22 stroke-width=%223%22/></svg>">
+<style>
+:root{--bg:#0c111b;--panel:#171d28;--panel2:#1c2432;--rule:#2a3547;--text:#d7e0ea;
+--dim:#7d8da4;--up:#4fb286;--down:#d1615d;--warm:#d9a441;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);
+font-family:system-ui,-apple-system,Segoe UI,sans-serif}.wrap{max-width:1180px;margin:auto;padding:12px}
+.top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.title{font:700 18px var(--mono)}
+button,.fallback{min-height:40px;padding:7px 12px;border:1px solid var(--rule);border-radius:7px;
+background:var(--panel);color:var(--text);font:12px var(--mono);cursor:pointer;text-decoration:none}
+button.active{border-color:var(--warm);color:var(--warm);background:rgba(217,164,65,.08)}
+.close-tab{margin-left:auto;width:40px;padding:0;font-size:18px}.meta{color:var(--dim);font:11px var(--mono)}
+.layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(280px,1fr);gap:10px}
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:10px;min-width:0}
+.chart-wrap{position:relative;width:100%}#chart{display:block;width:100%;height:520px;background:#0b1226;
+border:1px solid var(--rule);border-radius:8px;touch-action:none}
+#hover{display:none;position:absolute;pointer-events:none;z-index:2;padding:7px 9px;border:1px solid var(--rule);
+border-radius:6px;background:rgba(10,16,28,.96);font:11px/1.45 var(--mono);box-shadow:0 5px 18px #0008}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}.metric{padding:8px;
+border:1px solid var(--rule);border-radius:7px;background:var(--panel2)}.metric span{display:block;color:var(--dim);
+font:9px var(--mono);text-transform:uppercase}.metric b{font:16px var(--mono)}
+.bull{color:var(--up)}.bear{color:var(--down)}#note{font-size:12px;line-height:1.5}
+.pattern{padding:8px 0;border-bottom:1px solid var(--rule)}.pattern:last-child{border:0}
+.pattern-head{display:flex;justify-content:space-between;gap:8px;font-weight:650}.pattern p{margin:4px 0 0;color:var(--dim)}
+@media(max-width:760px){.wrap{padding:8px}.layout{grid-template-columns:1fr}#chart{height:390px}
+.summary{grid-template-columns:repeat(2,1fr)}.top .meta{width:100%}.close-tab{order:2}.title{font-size:16px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="title">{{ ticker }} live analysis</div>
+    <div class="tf"><button data-tf="1m">1m</button><button data-tf="3m">3m</button><button data-tf="5m">5m</button></div>
+    <div class="win"><button data-win="event">−10/+10</button><button data-win="10m">10m</button><button data-win="30m">30m</button><button data-win="2h">2h</button><button data-win="24h">24h</button></div>
+    <a class="fallback" href="/api/chart?ticker={{ ticker }}&interval={{ interval }}&window={{ window }}" target="_blank">SVG</a>
+    <button id="close-tab" class="close-tab" title="Close tab">×</button>
+    <div class="meta">Hover or drag across candles for OHLCV · auto-refresh 10s</div>
+  </div>
+  <div class="layout">
+    <div class="card"><div class="chart-wrap"><canvas id="chart"></canvas><div id="hover"></div></div></div>
+    <aside class="card"><div class="summary" id="summary"></div><div id="note">Loading analysis…</div></aside>
+  </div>
+</div>
+<script>
+const ticker={{ ticker|tojson }};let interval={{ interval|tojson }};let windowSel={{ window|tojson }};
+const canvas=document.getElementById('chart'),tip=document.getElementById('hover'),note=document.getElementById('note');
+let latest=null,hoverIndex=null;
+const money=n=>Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0});
+const signed=n=>`${n>0?'+':''}${Number(n||0).toFixed(0)}`;
+function active(){document.querySelectorAll('[data-tf]').forEach(b=>b.classList.toggle('active',b.dataset.tf===interval));
+document.querySelectorAll('[data-win]').forEach(b=>b.classList.toggle('active',b.dataset.win===windowSel))}
+function draw(payload){
+  latest=payload;const data=payload.candles||[],rect=canvas.getBoundingClientRect(),dpr=devicePixelRatio||1;
+  canvas.width=Math.max(320,Math.round(rect.width*dpr));canvas.height=Math.round(rect.height*dpr);
+  const x=canvas.getContext('2d');x.scale(dpr,dpr);const w=rect.width,h=rect.height;x.fillStyle='#0b1226';x.fillRect(0,0,w,h);
+  if(!data.length){x.fillStyle='#7d8da4';x.fillText('No live candles available',20,30);return}
+  const L=54,R=12,T=24,B=72,pw=w-L-R,ph=h-T-B,hi=Math.max(...data.map(c=>c.h)),lo=Math.min(...data.map(c=>c.l));
+  const vmax=Math.max(1,...data.map(c=>Number(c.v||0))),span=Math.max(hi-lo,hi*.001,0.01);
+  const py=v=>T+(hi-v)*ph/span,slot=pw/data.length,bw=Math.max(2,slot*.62);
+  x.font='10px '+getComputedStyle(document.documentElement).getPropertyValue('--mono');x.strokeStyle='#253146';x.fillStyle='#7d8da4';
+  for(let i=0;i<5;i++){const yy=T+ph*i/4;x.beginPath();x.moveTo(L,yy);x.lineTo(w-R,yy);x.stroke();
+    const val=hi-span*i/4;x.fillText(val.toFixed(val<10?3:2),4,yy+3)}
+  data.forEach((c,i)=>{const cx=L+slot*(i+.5),up=c.c>=c.o,col=up?'#4fb286':'#d1615d';
+    x.strokeStyle=col;x.fillStyle=col;x.beginPath();x.moveTo(cx,py(c.h));x.lineTo(cx,py(c.l));x.stroke();
+    x.fillRect(cx-bw/2,Math.min(py(c.o),py(c.c)),bw,Math.max(1,Math.abs(py(c.o)-py(c.c))));
+    const vh=Number(c.v||0)/vmax*50;x.globalAlpha=.32;x.fillRect(cx-bw/2,h-16-vh,bw,vh);x.globalAlpha=1});
+  if(hoverIndex!=null&&data[hoverIndex]){const cx=L+slot*(hoverIndex+.5);x.strokeStyle='#d9a441';x.setLineDash([4,3]);
+    x.beginPath();x.moveTo(cx,T);x.lineTo(cx,h-B+55);x.stroke();x.setLineDash([])}
+  x.fillStyle='#d7e0ea';x.fillText(`${ticker} · ${payload.used_interval||interval} · ${windowSel}`,L,14);
+}
+function inspect(ev){
+  if(!latest?.candles?.length)return;const r=canvas.getBoundingClientRect(),px=(ev.touches?ev.touches[0].clientX:ev.clientX)-r.left;
+  const L=54,R=12,slot=(r.width-L-R)/latest.candles.length;hoverIndex=Math.max(0,Math.min(latest.candles.length-1,Math.floor((px-L)/slot)));
+  const c=latest.candles[hoverIndex],dt=c.t?new Date(c.t*1000).toLocaleString():'Latest';
+  tip.innerHTML=`<b>${dt}</b><br>O ${c.o.toFixed(3)} · H ${c.h.toFixed(3)}<br>L ${c.l.toFixed(3)} · C ${c.c.toFixed(3)}<br>Vol ${money(c.v)}`;
+  tip.style.display='block';tip.style.left=Math.min(r.width-155,Math.max(5,px+12))+'px';tip.style.top='34px';draw(latest)}
+function render(payload){
+  const score=Number(payload.candlestick_score||0),cls=score>0?'bull':score<0?'bear':'';
+  document.getElementById('summary').innerHTML=`<div class="metric"><span>Pattern score</span><b class="${cls}">${signed(score)}</b></div>
+  <div class="metric"><span>Bias</span><b class="${cls}">${payload.bias||'neutral'}</b></div>
+  <div class="metric"><span>Confidence</span><b>${Number(payload.confidence||0)}%</b></div>
+  <div class="metric"><span>Bullish</span><b class="bull">${payload.bullish_patterns||0}</b></div>
+  <div class="metric"><span>Bearish</span><b class="bear">${payload.bearish_patterns||0}</b></div>
+  <div class="metric"><span>Candles</span><b>${payload.candles_analyzed||0}</b></div>`;
+  const rows=(payload.matched_patterns||[]).slice(0,12).map(p=>`<div class="pattern"><div class="pattern-head">
+  <span class="${p.score>0?'bull':'bear'}">${p.name}</span><span>${signed(p.score)} · ${p.bars_ago?'−'+p.bars_ago+' bars':'now'}</span></div>
+  <p>${p.description||''}</p></div>`).join('');
+  note.innerHTML=rows||'<div class="meta">No confirmed multi-candle pattern in the recent bars.</div>';draw(payload)}
+async function refreshData(){try{const r=await fetch(`/api/candlestick-patterns?ticker=${encodeURIComponent(ticker)}&interval=${interval}&window=${windowSel}`,{cache:'no-store'});
+  if(!r.ok)throw Error(r.status);render(await r.json())}catch(e){note.textContent='Live chart analysis unavailable.'}}
+function change(){active();const u=new URL(location.href);u.searchParams.set('interval',interval);u.searchParams.set('window',windowSel);
+history.replaceState(null,'',u);refreshData()}
+document.querySelectorAll('[data-tf]').forEach(b=>b.onclick=()=>{interval=b.dataset.tf;change()});
+document.querySelectorAll('[data-win]').forEach(b=>b.onclick=()=>{windowSel=b.dataset.win;change()});
+canvas.addEventListener('mousemove',inspect);canvas.addEventListener('touchmove',e=>{e.preventDefault();inspect(e)},{passive:false});
+canvas.addEventListener('mouseleave',()=>{tip.style.display='none';hoverIndex=null;if(latest)draw(latest)});
+addEventListener('resize',()=>latest&&draw(latest));document.getElementById('close-tab').onclick=()=>{window.close();setTimeout(()=>{if(!window.closed)location.href='/'},150)};
+active();refreshData();setInterval(refreshData, 10000);
+</script>
+</body>
+</html>

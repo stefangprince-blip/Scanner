@@ -4,6 +4,7 @@ SQLite so a restart mid-session doesn't wipe the board. The 4-hour window is
 enforced on read and on a periodic prune, so a stalled prune thread can never
 leave stale rows on screen.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     headline     TEXT NOT NULL,
     url          TEXT,
     source       TEXT,
+    sources      TEXT,
     published    REAL,
     first_seen   REAL NOT NULL,
     score        INTEGER NOT NULL,
@@ -54,49 +56,21 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        # Ensure older DBs get the new 'sources' column
+        try:
+            cols = [r[1] for r in self._conn.execute("PRAGMA table_info(alerts)").fetchall()]
+            if 'sources' not in cols:
+                self._conn.execute("ALTER TABLE alerts ADD COLUMN sources TEXT DEFAULT '[]'")
+                self._conn.commit()
+        except Exception:
+            # If ALTER not permitted or fails, keep running — older DBs will still work
+            pass
         # ticker -> quote dict, refreshed on the quote thread
         self.quotes: dict[str, dict] = {}
         self._quote_lock = threading.Lock()
 
     # -- alerts ------------------------------------------------------------
-    def add(self, alert: dict) -> bool:
-        """Insert an alert. Returns True if it was new."""
-        aid = alert_id(alert["ticker"], alert["headline"])
-        now = time.time()
-        with self._lock:
-            cur = self._conn.execute("SELECT 1 FROM alerts WHERE id = ?", (aid,))
-            if cur.fetchone():
-                return False
-            self._conn.execute(
-                "INSERT INTO alerts (id, ticker, headline, url, source, published,"
-                " first_seen, score, tags, dilution, distress, body)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    aid,
-                    alert["ticker"].upper(),
-                    alert["headline"],
-                    alert.get("url", ""),
-                    alert.get("source", ""),
-                    alert.get("published", now),
-                    now,
-                    int(alert.get("score", 0)),
-                    json.dumps(alert.get("tags", [])),
-                    json.dumps(alert.get("dilution", [])),
-                    json.dumps(alert.get("distress", [])),
-                    (alert.get("body", "") or "")[:600],
-                ),
-            )
-            self._conn.commit()
-        return True
-
-    def active(self, ttl: int | None = None) -> list[dict]:
-        ttl = config.ALERT_TTL_SECONDS if ttl is None else ttl
-        cutoff = time.time() - ttl
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM alerts WHERE first_seen >= ? ORDER BY first_seen DESC",
-                (cutoff,),
-            ).fetchall()
+    def _rows_to_alerts(self, rows: list, ttl: int) -> list[dict]:
         out = []
         now = time.time()
         for r in rows:
@@ -107,6 +81,7 @@ class Store:
                     "headline": r["headline"],
                     "url": r["url"],
                     "source": r["source"],
+                    "sources": (json.loads(r["sources"] or "[]") if r["sources"] is not None else ([r["source"]] if r["source"] else [])),
                     "published": r["published"],
                     "first_seen": r["first_seen"],
                     "age_seconds": now - r["first_seen"],
@@ -120,9 +95,183 @@ class Store:
             )
         return out
 
+    def add(self, alert: dict) -> bool:
+        """Insert an alert. Returns True if it was new."""
+        aid = alert_id(alert["ticker"], alert["headline"])
+        now = time.time()
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM alerts WHERE id = ?", (aid,))
+            row = cur.fetchone()
+            if row:
+                # Existing alert: merge sources, tags, dilution, distress and bump score if higher
+                # Safely read existing row values (sqlite3.Row does not support .get())
+                cols = list(row.keys())
+                sources_val = row['sources'] if 'sources' in cols else None
+                source_val = row['source'] if 'source' in cols else None
+                try:
+                    existing_sources = json.loads(sources_val) if sources_val is not None else ([source_val] if source_val else [])
+                except Exception:
+                    existing_sources = [source_val] if source_val else []
+                new_source = alert.get('source') or ''
+                source_changed = bool(
+                    new_source and new_source not in existing_sources
+                )
+                if new_source and new_source not in existing_sources:
+                    existing_sources.append(new_source)
+                # Merge arrays for tags/dilution/distress
+                try:
+                    existing_tags = set(json.loads(row['tags'] or '[]')) if 'tags' in cols else set()
+                except Exception:
+                    existing_tags = set()
+                try:
+                    existing_dil = set(json.loads(row['dilution'] or '[]')) if 'dilution' in cols else set()
+                except Exception:
+                    existing_dil = set()
+                try:
+                    existing_dist = set(json.loads(row['distress'] or '[]')) if 'distress' in cols else set()
+                except Exception:
+                    existing_dist = set()
+                new_tags = set(alert.get('tags', []))
+                new_dil = set(alert.get('dilution', []))
+                new_dist = set(alert.get('distress', []))
+                # Stable ordering makes equality checks reliable and avoids
+                # rewriting identical JSON in a different set iteration order.
+                merged_tags = sorted(existing_tags.union(new_tags))
+                merged_dil = sorted(existing_dil.union(new_dil))
+                merged_dist = sorted(existing_dist.union(new_dist))
+                # Score: keep the max to reflect strongest signal observed
+                existing_score = int(row['score'] or 0) if 'score' in cols else 0
+                new_score = max(int(alert.get('score', 0)), existing_score)
+                current_tags = sorted(existing_tags)
+                current_dil = sorted(existing_dil)
+                current_dist = sorted(existing_dist)
+                if (
+                    not source_changed
+                    and new_score == existing_score
+                    and merged_tags == current_tags
+                    and merged_dil == current_dil
+                    and merged_dist == current_dist
+                ):
+                    return False
+                # Update the DB row with merged info
+                self._conn.execute(
+                    "UPDATE alerts SET sources = ?, source = ?, score = ?, tags = ?, dilution = ?, distress = ? WHERE id = ?",
+                    (json.dumps(existing_sources), ', '.join(existing_sources), new_score, json.dumps(merged_tags), json.dumps(merged_dil), json.dumps(merged_dist), aid),
+                )
+                self._conn.commit()
+                return False
+
+            self._conn.execute(
+                "INSERT INTO alerts (id, ticker, headline, url, source, sources, published,"
+                " first_seen, score, tags, dilution, distress, body)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    aid,
+                    alert["ticker"].upper(),
+                    alert["headline"],
+                    alert.get("url", ""),
+                    alert.get("source", ""),
+                    json.dumps([alert.get("source","")]) ,
+                    alert.get("published", now),
+                    now,
+                    int(alert.get("score", 0)),
+                    json.dumps(alert.get("tags", [])),
+                    json.dumps(alert.get("dilution", [])),
+                    json.dumps(alert.get("distress", [])),
+                    (alert.get("body", "") or "")[:600],
+                ),
+            )
+            self._conn.commit()
+        # Best-effort notification hook so external listeners can react in realtime.
+        try:
+            # Import locally to avoid creating an import-time dependency cycle
+            from . import notifications
+
+            # Send a lightweight alert payload to notification channels
+            notif = {
+                "id": aid,
+                "ticker": alert.get("ticker", "").upper(),
+                "headline": alert.get("headline", ""),
+                "url": alert.get("url", ""),
+                "source": alert.get("source", ""),
+                "published": alert.get("published", now),
+                "score": int(alert.get("score", 0)),
+            }
+            notifications.send_alert(notif)
+        except Exception:
+            # Keep store behavior robust even if notifications fail
+            pass
+        return True
+
+    def active(self, ttl: int | None = None) -> list[dict]:
+        ttl = config.ALERT_TTL_SECONDS if ttl is None else ttl
+        cutoff = time.time() - ttl
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM alerts WHERE first_seen >= ? ORDER BY first_seen DESC",
+                (cutoff,),
+            ).fetchall()
+        return self._rows_to_alerts(rows, ttl)
+
+    def active_latest_per_ticker(self, ttl: int | None = None) -> list[dict]:
+        ttl = config.ALERT_TTL_SECONDS if ttl is None else ttl
+        cutoff = time.time() - ttl
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT a.* FROM alerts a
+                JOIN (
+                    SELECT ticker, MAX(first_seen) AS max_seen
+                    FROM alerts
+                    WHERE first_seen >= ?
+                    GROUP BY ticker
+                ) latest
+                  ON a.ticker = latest.ticker AND a.first_seen = latest.max_seen
+                WHERE a.first_seen >= ?
+                ORDER BY a.first_seen DESC
+                """,
+                (cutoff, cutoff),
+            ).fetchall()
+        return self._rows_to_alerts(rows, ttl)
+
+    def latest_news(self, ticker: str, limit: int = 24) -> list[dict]:
+        """Return recent candidates for on-demand news analysis."""
+        ttl = max(config.ALERT_TTL_SECONDS, 24 * 60 * 60)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM alerts WHERE ticker = ? ORDER BY "
+                "COALESCE(published, first_seen) DESC LIMIT ?",
+                (str(ticker or "").upper(), max(4, min(100, int(limit)))),
+            ).fetchall()
+        return self._rows_to_alerts(rows, ttl)
+
     def active_tickers(self, ttl: int | None = None) -> list[str]:
         ttl = config.ALERT_TTL_SECONDS if ttl is None else ttl
         cutoff = time.time() - ttl
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT ticker FROM alerts WHERE first_seen >= ?",
+                (cutoff,),
+            ).fetchall()
+        return [r["ticker"] for r in rows]
+
+    def active_counts(self, ttl: int | None = None) -> tuple[int, int]:
+        """Return active alert and distinct-ticker counts without decoding rows."""
+        ttl = config.ALERT_TTL_SECONDS if ttl is None else ttl
+        cutoff = time.time() - ttl
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS alerts, COUNT(DISTINCT ticker) AS tickers
+                FROM alerts
+                WHERE first_seen >= ?
+                """,
+                (cutoff,),
+            ).fetchone()
+        return int(row["alerts"]), int(row["tickers"])
+
+    def recent_tickers(self, lookback_seconds: int) -> list[str]:
+        cutoff = time.time() - max(0, int(lookback_seconds))
         with self._lock:
             rows = self._conn.execute(
                 "SELECT DISTINCT ticker FROM alerts WHERE first_seen >= ?",
@@ -149,12 +298,66 @@ class Store:
 
     # -- quotes ------------------------------------------------------------
     def set_quote(self, ticker: str, quote: dict) -> None:
+        now = time.time()
+        key = ticker.upper()
         with self._quote_lock:
-            self.quotes[ticker.upper()] = {**quote, "updated": time.time()}
+            previous = self.quotes.get(key, {})
+            self.quotes[key] = {
+                **quote,
+                "first_updated": previous.get("first_updated", now),
+                "updated": now,
+            }
+
+    def ticker_appeared_at(self, ticker: str) -> float | None:
+        key = str(ticker or "").upper()
+        cutoff = time.time() - int(config.ALERT_TTL_SECONDS)
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT MIN(first_seen) AS appeared
+                FROM alerts
+                WHERE ticker = ? AND first_seen >= ?
+                """,
+                (key, cutoff),
+            ).fetchone()
+        alert_time = float(row["appeared"]) if row and row["appeared"] is not None else None
+        with self._quote_lock:
+            quote_time = self.quotes.get(key, {}).get("first_updated")
+        candidates = [float(v) for v in (alert_time, quote_time) if v is not None]
+        return min(candidates) if candidates else None
 
     def get_quote(self, ticker: str) -> dict:
         with self._quote_lock:
             return dict(self.quotes.get(ticker.upper(), {}))
+
+    def quotes_snapshot(
+        self,
+        change_min: float | None = None,
+        include_symbols: set[str] | None = None,
+    ) -> dict[str, dict]:
+        """Copy quotes, optionally prefiltering quote-only rows by change.
+
+        Alert-linked symbols are always retained so filtering semantics remain
+        identical for catalyst rows.
+        """
+        include = include_symbols or set()
+        with self._quote_lock:
+            if change_min is None:
+                return {k: dict(v) for k, v in self.quotes.items()}
+            return {
+                k: dict(v)
+                for k, v in self.quotes.items()
+                if k in include
+                or (
+                    v.get("change_pct") is not None
+                    and float(v.get("change_pct")) > change_min
+                )
+            }
+
+    def quote_count(self) -> int:
+        """Count cached quotes without allocating a full snapshot."""
+        with self._quote_lock:
+            return len(self.quotes)
 
     def all_quotes(self) -> dict[str, dict]:
         with self._quote_lock:

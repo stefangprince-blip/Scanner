@@ -5,6 +5,7 @@ costs you attention at exactly the wrong moment, so the parenthetical
 "(NASDAQ: ABCD)" convention is the primary signal and everything else is
 treated as a weaker fallback.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,6 +35,7 @@ PAREN_RE = re.compile(
 BARE_RE = re.compile(rf"\b(?:{EXCHANGES})\s*[:\-\u2013]\s*([A-Z]{{2,5}})\b")
 
 CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
+PLAIN_TICKER_RE = re.compile(r"\b([A-Z]{1,5})\b")
 
 # Words that look like tickers but aren't. Trimmed to things that genuinely
 # show up inside exchange-style patterns or cashtags in wire copy.
@@ -136,7 +138,48 @@ def extract(text: str) -> list[str]:
         for m in CASHTAG_RE.finditer(text):
             add(m.group(1))
 
-    return found[:3]   # a release naming 4+ tickers is an index piece, not news
+    if not found:
+        for m in PLAIN_TICKER_RE.finditer(text):
+            candidate = m.group(1)
+            if len(candidate) < 2:
+                continue
+            if candidate in BLOCKLIST:
+                continue
+            # Avoid grabbing common English words that happen to be 2-5 letters.
+            if candidate.lower() in {
+                "this",
+                "that",
+                "with",
+                "from",
+                "into",
+                "will",
+                "have",
+                "been",
+                "were",
+                "said",
+                "today",
+                "news",
+                "analyst",
+                "study",
+                "phase",
+                "report",
+                "stock",
+                "shares",
+                "market",
+                "price",
+                "value",
+                "trade",
+                "trading",
+                "company",
+                "corporation",
+                "group",
+                "inc",
+                "corp",
+            }:
+                continue
+            add(candidate)
+
+    return found[:3]  # a release naming 4+ tickers is an index piece, not news
 
 
 # ---------------------------------------------------------------------------
